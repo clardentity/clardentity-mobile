@@ -1,3 +1,4 @@
+import { fetch } from "expo/fetch";
 import { localStorage } from "@/lib/storage";
 import { sessionHealthConsent } from "@/lib/healthConsent";
 import { API_BASE_URL, clientTimezoneHeader } from "@/lib/apiClient";
@@ -94,7 +95,7 @@ export async function streamGuestMessage(
     });
   } catch (err) {
     // An abort is the visitor stopping or closing the demo, not a failure.
-    if (signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
+    if (signal?.aborted || (err instanceof Error && err.name === "AbortError")) return;
     handlers.onError("Couldn't reach Clardentity. Check your connection and try again.");
     return;
   }

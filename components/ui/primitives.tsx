@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -9,11 +9,13 @@ import {
   type PressableProps,
   type StyleProp,
   type TextInputProps,
+  type TextInputInstance,
   type TextProps,
   type TextStyle,
   type ViewStyle,
 } from "react-native";
 import { fonts, fontSize, px, radius, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
+import { tourRef } from "@/components/tour/TourOverlay";
 
 /* The web's components/ui/primitives.tsx, in React Native. Same names, same
  * variants and sizes; Tailwind classes became StyleSheet values read from
@@ -93,7 +95,7 @@ export function Card({
 }) {
   const s = useThemedStyles(cardStyles);
   return (
-    <View nativeID={tourId ? `tour-${tourId}` : undefined} style={[s.card, padded && s.padded, style]}>
+    <View ref={tourRef(tourId)} collapsable={false} style={[s.card, padded && s.padded, style]}>
       {children}
     </View>
   );
@@ -217,11 +219,12 @@ function useFieldStyle(): TextStyle {
   };
 }
 
-export function Input({ style, editable, ...rest }: TextInputProps) {
+export function Input({ style, editable, ref, ...rest }: TextInputProps & { ref?: Ref<TextInputInstance> }) {
   const base = useFieldStyle();
   const c = useColors();
   return (
     <TextInput
+      ref={ref}
       placeholderTextColor={c.inkMuted}
       editable={editable}
       style={[base, { height: px(44) }, editable === false && { backgroundColor: c.surfaceMuted, color: c.inkMuted }, style]}
@@ -230,11 +233,12 @@ export function Input({ style, editable, ...rest }: TextInputProps) {
   );
 }
 
-export function Textarea({ style, ...rest }: TextInputProps) {
+export function Textarea({ style, ref, ...rest }: TextInputProps & { ref?: Ref<TextInputInstance> }) {
   const base = useFieldStyle();
   const c = useColors();
   return (
     <TextInput
+      ref={ref}
       multiline
       textAlignVertical="top"
       placeholderTextColor={c.inkMuted}

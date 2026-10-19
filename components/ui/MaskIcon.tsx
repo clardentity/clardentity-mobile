@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { StyleProp, ViewStyle } from "react-native";
+import { View, type StyleProp, type ViewStyle } from "react-native";
 import { SvgXml } from "react-native-svg";
 import { ICONS } from "@/components/ui/icons";
 import { useColors } from "@/lib/theme";
@@ -44,13 +44,10 @@ export function MaskIcon({
   }, [src, paint]);
   if (!xml) return null;
   return (
-    <SvgXml
-      xml={xml}
-      width={width ?? size}
-      height={height ?? size}
-      style={style}
-      accessibilityElementsHidden
-      importantForAccessibility="no-hide-descendants"
-    />
+    // Decorative: hidden from screen readers on the wrapper, which (unlike the
+    // SVG element) takes the accessibility props on every platform.
+    <View style={style} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" pointerEvents="none">
+      <SvgXml xml={xml} width={width ?? size} height={height ?? size} />
+    </View>
   );
 }

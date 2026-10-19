@@ -290,7 +290,9 @@ function announce() {
 
 function subscribe(onChange: () => void) {
   listeners.add(onChange);
-  return () => listeners.delete(onChange);
+  return () => {
+    listeners.delete(onChange);
+  };
 }
 
 function storedTheme(): Theme | null {
@@ -347,6 +349,15 @@ const ThemeContext = createContext<ThemeContextValue>({
 /** Provides the resolved palette to everything below it. */
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const { theme, accent } = useAppearance();
+  const value = useMemo(() => ({ theme, accent, colors: paletteFor(theme, accent) }), [theme, accent]);
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+}
+
+/** Draws a subtree in one theme whatever the app is in, keeping the accent -
+ *  the web's `data-theme="dark"` on a single element (the landing demo's
+ *  panel sits on a dark photograph in either theme). */
+export function ThemeOverride({ theme, children }: { theme: Theme; children: ReactNode }) {
+  const { accent } = useContext(ThemeContext);
   const value = useMemo(() => ({ theme, accent, colors: paletteFor(theme, accent) }), [theme, accent]);
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }

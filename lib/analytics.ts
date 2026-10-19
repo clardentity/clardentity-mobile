@@ -149,9 +149,10 @@ export function track(event: AnalyticsEvent, props?: AnalyticsProps) {
     // a hurry by a future change that did not read the note at the top.
     if (FORBIDDEN.test(k)) continue;
     if (typeof v === "string" && v.length > 40) continue;
+    if (v === undefined) continue;
     safe[k] = v;
   }
-  void getClient().then((c) => c?.capture(event, sanitize(safe) as AnalyticsProps));
+  void getClient().then((c) => c?.capture(event, sanitize(safe) as Record<string, string | number | boolean | null>));
 }
 
 /** `/chat/6f2a…` -> `/chat/[id]`. A conversation id is a handle on somebody's
