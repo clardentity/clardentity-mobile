@@ -1,0 +1,1842 @@
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  DeviceEventEmitter,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+  type TextInputInstance,
+  type ViewInstance,
+} from "react-native";
+import Animated, { FadeIn } from "react-native-reanimated";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { LinearGradient } from "expo-linear-gradient";
+import { fetch } from "expo/fetch";
+import { File, Paths } from "expo-file-system";
+import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from "expo-audio";
+import { useRouter } from "expo-router";
+import Svg, { Path } from "react-native-svg";
+import { ErrorBoundary } from "@/components/system/ErrorBoundaries";
+import { API_BASE_URL, apiFetch } from "@/lib/apiClient";
+import { authErrorMessage, getAccessToken } from "@/lib/auth";
+import {
+  streamChatMessage,
+  type ChatMessage,
+  type RefinedQuestionSuggestion,
+  type ClarifyingOptionsSuggestion,
+  type DecisionReviewData,
+  type GeneratedImage,
+  type HealthConsentState,
+  type ThinkingReviewData,
+} from "@/lib/sse";
+import { ModeSelector, type CognitiveMode } from "@/components/chat/ModeSelector";
+import { forgetFreshChat, isFreshChat, markFreshChat } from "@/lib/freshChats";
+import { ChatGreeting, ModeDisclosure, TemporaryChatIntro } from "@/components/chat/ChatGreeting";
+import { MessageList, type StreamingMessage } from "@/components/chat/MessageList";
+import { ModeCarousel, groupByMode } from "@/components/chat/ModeCarousel";
+import { MessageInput, type PendingAttachment } from "@/components/chat/MessageInput";
+import { LiveCallOverlay } from "@/components/chat/LiveCallOverlay";
+import { UpgradeDialog } from "@/components/chat/UpgradeDialog";
+import { DEFAULT_MODE, MODE_BY_VALUE, type PickableMode } from "@/lib/modes";
+import { usePreviewAccess } from "@/lib/previewAccess";
+import { durationBucket, track } from "@/lib/analytics";
+import { setSmartSwitching, useSmartSwitching } from "@/lib/modeSwitching";
+import { getChoice as getModelChoice, PICKABLE_MODES } from "@/lib/pickableModels";
+import { ContextQuestionCard } from "@/components/chat/ContextQuestionCard";
+import { HealthConsentCard } from "@/components/chat/HealthConsentCard";
+import { fetchHealthConsent, giveHealthConsent } from "@/lib/healthConsent";
+import { holdTemporaryChat } from "@/lib/temporaryChat";
+import { LearningRoleCard } from "@/components/chat/LearningRoleCard";
+import { ModeSwitchToast } from "@/components/chat/ModeSwitchToast";
+import { RefinedQuestionCard } from "@/components/chat/RefinedQuestionCard";
+import { ClarifyingOptionsCard } from "@/components/chat/ClarifyingOptionsCard";
+import { MaskIcon } from "@/components/ui/MaskIcon";
+import { companionLabel, useCompanionNames } from "@/lib/companionNames";
+import { sessionStorage } from "@/lib/storage";
+import { fonts, fontSize, px, radius, space, useThemedStyles, type Colors } from "@/lib/theme";
+import { useOnline } from "@/lib/useOnline";
+import { usePhoneLayout } from "@/lib/usePhoneLayout";
+import { useScrollEdges } from "@/lib/useScrollEdges";
+import {
+  AvatarPanel,
+  type AvatarExpression,
+  type AvatarGesture,
+  type AvatarState,
+} from "@/components/avatar/AvatarPanel";
+import { tourRef } from "@/components/tour/TourOverlay";
+
+type Conversation = {
+  id: string;
+  title: string | null;
+  default_mode: CognitiveMode | null;
+  workspace_id: string;
+  temporary?: boolean;
+};
+
+type AvatarCue = { expression: AvatarExpression; gesture: AvatarGesture };
+
+/** The stream's named phases (TECHNICAL_GUIDE §5), as the indicator says them. */
+const STATUS_NAMES: Record<string, string> = {
+  searching: "Searching the web",
+  reading: "Reading sources",
+  thinking: "Thinking",
+  validating: "Checking the claims",
+  image: "Drawing",
+  slow: "Taking a little longer",
+};
+
+/** How long an answer may go with nothing to show before the Quick answer
+ *  button appears on its own (the server's "slow" warning shows it sooner). */
+const SLOW_AFTER_MS = 7000;
+/* The server pings its stream every 15 seconds while it works, so a gap this
+ * long is a connection that has gone away, not an answer taking its time.
+ * Generous enough to survive a phone switching cell tower, short enough that
+ * nobody sits watching "Thinking…" wondering whether to wait. */
+const SILENCE_MS = 45000;
+
+const GESTURE_BY_MODE: Record<CognitiveMode, AvatarGesture> = {
+  knowing: "presenting",
+  thinking: "chin_stroke",
+  decision: "weighing_scales",
+  learning: "open_hand_explaining",
+  creative: "presenting",
+  guidance: "open_hand_explaining",
+  healthcare: "open_hand_explaining",
+  rapid: "presenting",
+  legal: "open_hand_explaining",
+};
+
+/** Stable empty list, so the effect below doesn't re-run every render. */
+const EMPTY_MODES: readonly PickableMode[] = [];
+
+/** The event the shell listens on to retitle a chat - the web's window
+ *  CustomEvent of the same name, on React Native's event emitter. The
+ *  payload is the web's `detail`: { id, title }. */
+export const CONVERSATION_RENAMED_EVENT = "clardentity:conversation-renamed";
+
+export function ChatView({ conversationId }: { conversationId: string }) {
+  const s = useThemedStyles(styles);
+  const insets = useSafeAreaInsets();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Distinct from "no messages". Without it, reopening a chat rendered the
+  // "Start a chat" empty state for the second or two the fetch took.
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  // Which chat is temporary, by id - so a stale answer for the chat before
+  // this one is ignored by derivation, as the shell does with its title.
+  const [temporaryId, setTemporaryId] = useState<string | null>(null);
+  const temporary = temporaryId === conversationId;
+  // Healthcare's consent, as the server sees it for where this person is.
+  // Read the first time Healthcare is picked; null until then.
+  const [healthConsent, setHealthConsent] = useState<HealthConsentState | null>(null);
+  const [healthBusy, setHealthBusy] = useState(false);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const router = useRouter();
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  // Never null in practice: a new chat opens in Finder, always - not in
+  // whatever this device last used, which had a Decision-making chat
+  // reopening the composer in Decision-making and read as the wrong
+  // default. A chat's own remembered mode, if it has one, replaces it once
+  // history loads. The type keeps `null` only because ModeSelector and the
+  // gates below still speak it.
+  const [mode, setMode] = useState<CognitiveMode | null>(DEFAULT_MODE);
+  // Smart switching: the companion may stop and propose a better-suited mode
+  // before answering. Manual: never. See lib/modeSwitching.
+  const smartSwitching = useSmartSwitching();
+  // Set when the companion switched mode for a question. Smart switching is
+  // automatic: the suggestion is taken and the answer written in the new
+  // mode straight away, with this banner saying so - and, while that answer
+  // is still being written, offering to stop it and answer in the original
+  // mode instead (hence the question itself is kept here). Afterwards it
+  // offers the way back for the *next* question - "how do I go back to
+  // Knowing?" was the first thing asked.
+  const [switchedFrom, setSwitchedFrom] = useState<{
+    from: CognitiveMode;
+    to: CognitiveMode;
+    content: string;
+    attachments: PendingAttachment[];
+    // The gate flags the switched send carried, so answering in the old
+    // mode instead re-sends with them intact - without them the server
+    // asked the context question a second time, in the other mode.
+    flags: { contextAcknowledged: boolean; contextRounds: number; refinedConfirmed: boolean; clarifyingConfirmed: boolean };
+  } | null>(null);
+  // The four-second card over the composer right after an automatic switch
+  // (see ModeSwitchToast). Cleared when it runs out, when reverted, or when
+  // the answer it refers to is stopped.
+  const [switchToast, setSwitchToast] = useState(false);
+  // Stable, so the toast's countdown effect doesn't restart each render.
+  const dismissSwitchToast = useCallback(() => setSwitchToast(false), []);
+  // Which locked mode (or model) opened the plans dialog, for its headline.
+  const [upsell, setUpsell] = useState<string | null>(null);
+  // The paid-tier companions and what is left of today's preview allowance.
+  // Read through a ref as well, so the streaming callbacks below see the
+  // current answer rather than the one captured when the send began.
+  const previewAccess = usePreviewAccess();
+  const lockedModes = previewAccess.unlocked ? EMPTY_MODES : previewAccess.modes;
+  const lockedModesRef = useRef<readonly PickableMode[]>(lockedModes);
+  useEffect(() => {
+    lockedModesRef.current = lockedModes;
+  }, [lockedModes]);
+  // "Quick answer" - the way out of a slow answer. Shown while an answer is
+  // being written once the server has said it will take a while (a status
+  // event with phase "slow": no documents matched, so a web search and the
+  // checking that follows are ahead) or, failing that, once a fixed number
+  // of seconds have passed with nothing to show. Tapping it stops the
+  // answer and asks the same question down the quick path: no gates, no
+  // search, no checking, the gist in a few seconds. Not a mode anyone picks
+  // - the composer stays in whatever they were in.
+  const [slowHint, setSlowHint] = useState(false);
+  const lastSendRef = useRef<{ content: string; attachments: PendingAttachment[]; mode: CognitiveMode } | null>(
+    null,
+  );
+  // When the stream last produced anything, pings included. The watchdog
+  // below reads it; the stream writes it.
+  const lastActivityRef = useRef<number>(0);
+  // The verdict box that arrived during streaming, until "final" writes it
+  // onto the message itself.
+  const earlyReviewRef = useRef<{
+    decision_review?: DecisionReviewData | null;
+    thinking_review?: ThinkingReviewData | null;
+  } | null>(null);
+  // Same story as the review above: a picture that arrived while the answer
+  // was still streaming is not on the row the "answer" event carries, and
+  // would vanish until "final" without this.
+  const earlyImageRef = useRef<GeneratedImage | null>(null);
+  const [streaming, setStreaming] = useState<StreamingMessage | null>(null);
+  const [sending, setSending] = useState(false);
+  // The message whose claims are still being verified. It is already on
+  // screen and already saved; this only drives the "checking claims" note.
+  const [validatingId, setValidatingId] = useState<string | null>(null);
+  const [isTyping, setIsTyping] = useState(false);
+  const [reacting, setReacting] = useState(false);
+  const [avatarCue, setAvatarCue] = useState<AvatarCue | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [playingMessageId, setPlayingMessageId] = useState<string | null>(null);
+  // Offline, a send can only fail - and fail after the question has been
+  // typed and the bubble drawn. On the phone layout the composer keeps the
+  // draft and waits.
+  const phoneLayout = usePhoneLayout();
+  // The composer's text lives here so editing a sent message can put it back.
+  // Phone layout: what's being typed survives leaving the chat and coming
+  // back, kept per chat in (memory-only) sessionStorage and cleared once
+  // it's sent.
+  const draftKey = `clardentity-draft:${conversationId}`;
+  const [draft, setDraft] = useState(() => {
+    if (!phoneLayout) return "";
+    return sessionStorage.getItem(draftKey) ?? "";
+  });
+  // What the server says it's doing, named ("Searching the web") - shown in
+  // place of a bare "Thinking" on the phone layout.
+  const [statusLabel, setStatusLabel] = useState<string | null>(null);
+  const fadePillEdges = useScrollEdges("x");
+
+  /* Phone, typing: the mode rail folds to a chip so the thread keeps the
+   * room above the keyboard. Tracked from the keyboard coming up while the
+   * chat box itself has focus (the web listened for focusin on it);
+   * `railOpen` is the chip tapped open, until the keyboard goes. A wide
+   * tablet layout never folds. */
+  const [composerFocused, setComposerFocused] = useState(false);
+  const [railOpen, setRailOpen] = useState(false);
+  const [keyboardShown, setKeyboardShown] = useState(false);
+  // A phone held sideways (under 500pt tall) folds the rail all the time: the
+  // rail and the box otherwise left the thread about two lines of the screen.
+  const shortScreen = phoneLayout && windowHeight < 500;
+  const composerRef = useRef<TextInputInstance | null>(null);
+  useEffect(() => {
+    // iOS announces the keyboard before it moves; Android only after.
+    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const onShow = Keyboard.addListener(showEvent, () => {
+      setKeyboardShown(true);
+      if (phoneLayout && composerRef.current?.isFocused()) setComposerFocused(true);
+    });
+    const onHide = Keyboard.addListener(hideEvent, () => {
+      setKeyboardShown(false);
+      setComposerFocused(false);
+      setRailOpen(false);
+    });
+    return () => {
+      onShow.remove();
+      onHide.remove();
+    };
+  }, [phoneLayout]);
+  useEffect(() => {
+    if (!phoneLayout) return;
+    if (draft) sessionStorage.setItem(draftKey, draft);
+    else sessionStorage.removeItem(draftKey);
+  }, [draft, draftKey, phoneLayout]);
+  const online = useOnline() || !phoneLayout;
+  // Carousel (split-by-mode) view is opt-IN, and only offered once a second
+  // mode exists - "read as one thread" is the default view.
+  const companionNames = useCompanionNames();
+  const [carousel, setCarousel] = useState(false);
+  const [activeTrack, setActiveTrack] = useState(0);
+  const [callOpen, setCallOpen] = useState(false);
+  // The server asked why before answering. Holds the accumulated send so far
+  // (the original message plus any earlier rounds already answered) so a
+  // reply is appended rather than replacing it, and `rounds` so the resend
+  // can tell the server how many rounds have already run - the gate can fire
+  // more than once per turn, up to a cap on the server.
+  const [pendingContext, setPendingContext] = useState<{
+    question: string;
+    content: string;
+    attachments: PendingAttachment[];
+    mode: CognitiveMode;
+    rounds: number;
+  } | null>(null);
+  // The server asked "did you mean" before answering. Holds the original
+  // send so either choice can replay it - same shape as pendingMode, since
+  // this is a single yes/no suggestion too, not a multi-round exchange.
+  const [pendingRefined, setPendingRefined] = useState<{
+    suggestion: RefinedQuestionSuggestion;
+    content: string;
+    attachments: PendingAttachment[];
+    mode: CognitiveMode;
+  } | null>(null);
+  // The server asked "which did you mean" before answering, with tappable
+  // options - same shape as pendingRefined, since this is also a single
+  // exchange rather than a multi-round one.
+  const [pendingClarifyingOptions, setPendingClarifyingOptions] = useState<{
+    suggestion: ClarifyingOptionsSuggestion;
+    content: string;
+    attachments: PendingAttachment[];
+    mode: CognitiveMode;
+  } | null>(null);
+  const audioRef = useRef<AudioPlayer | null>(null);
+  // Lets the stop button cut the current request off mid-stream. Recreated
+  // per send rather than reused, since an aborted controller can't un-abort.
+  const abortControllerRef = useRef<AbortController | null>(null);
+  // Whether the in-flight send has already reached onAnswer - decides what
+  // stopping early should do to the optimistic user bubble. Before onAnswer,
+  // nothing was written server-side (same as any gate), so stopping should
+  // roll it back; after, the assistant row already exists and stays, just
+  // without the analysis that was still running.
+  const hasAnsweredRef = useRef(false);
+  const pendingUserMessageIdRef = useRef<string | null>(null);
+
+  // The keyboard-avoiding view measures itself from its parent, not the
+  // screen, so it needs to be told how far down the screen it starts (the
+  // shell's top bar sits above it).
+  const frameRef = useRef<ViewInstance | null>(null);
+  const [keyboardOffset, setKeyboardOffset] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    Promise.all([
+      apiFetch<Conversation>(`/chat/conversations/${conversationId}`),
+      apiFetch<ChatMessage[]>(`/chat/${conversationId}/messages`),
+    ])
+      .then(([conv, msgs]) => {
+        if (cancelled) return;
+        forgetFreshChat(conversationId);
+        setMessages(msgs);
+        setTemporaryId(conv.temporary ? conversationId : null);
+        setWorkspaceId(conv.workspace_id);
+        setLoadingHistory(false);
+        // Only a mode from the picker: a chat whose last answer was a quick
+        // one must not reopen with the composer set to the unpickable path.
+        if (conv.default_mode && MODE_BY_VALUE[conv.default_mode]) setMode(conv.default_mode);
+
+        const lastCued = [...msgs].reverse().find((m) => m.avatar_expression && m.avatar_gesture);
+        if (lastCued) {
+          setAvatarCue({
+            expression: lastCued.avatar_expression as AvatarExpression,
+            gesture: lastCued.avatar_gesture as AvatarGesture,
+          });
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        forgetFreshChat(conversationId);
+        setError(authErrorMessage(err));
+        setLoadingHistory(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
+
+  // A reply being read aloud stops when the chat goes away.
+  useEffect(() => {
+    return () => {
+      const player = audioRef.current;
+      audioRef.current = null;
+      try {
+        player?.pause();
+        player?.remove();
+      } catch {
+        // already released
+      }
+    };
+  }, []);
+
+  /** Where Healthcare's rules allow processing but not storing (backend
+   *  regulations: storage "transient"), it runs only in a temporary chat -
+   *  opened here, in Healthcare, and deleted when left. */
+  async function openHealthcareTemporaryChat() {
+    if (!workspaceId) return;
+    try {
+      const conv = await apiFetch<{ id: string }>("/chat/conversations", {
+        method: "POST",
+        body: { workspace_id: workspaceId, default_mode: "healthcare", temporary: true },
+      });
+      holdTemporaryChat(conv.id);
+      markFreshChat(conv.id);
+      router.push(`/chat/${conv.id}`);
+    } catch {
+      setError("Couldn't open a temporary chat for Healthcare. Try again?");
+    }
+  }
+
+  useEffect(() => {
+    if (mode !== "healthcare" || healthConsent) return;
+    let cancelled = false;
+    fetchHealthConsent()
+      .then((state) => {
+        if (!cancelled) setHealthConsent(state);
+      })
+      .catch(() => {
+        // The send path asks again (428) if this never answered.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, healthConsent]);
+
+  // Consent given where Healthcare may only run as a temporary chat, but
+  // this chat is a saved one: move to a temporary one before anything is
+  // asked here.
+  const healthNeedsTemporary =
+    mode === "healthcare" && Boolean(healthConsent?.given) && healthConsent?.storage === "transient" && !temporary;
+  const healthBlocked =
+    mode === "healthcare" && healthConsent !== null && (!healthConsent.available || !healthConsent.given);
+
+  async function agreeToHealthcare(language: string) {
+    if (!healthConsent) return;
+    setHealthBusy(true);
+    setHealthError(null);
+    try {
+      const state = await giveHealthConsent(healthConsent.version, language);
+      setHealthConsent(state);
+      track("consent_choice", { choice: "health_granted" });
+      if (state.storage === "transient" && !temporary) await openHealthcareTemporaryChat();
+    } catch (err) {
+      setHealthError(authErrorMessage(err));
+    } finally {
+      setHealthBusy(false);
+    }
+  }
+
+  async function handleSend(
+    content: string,
+    attachments: PendingAttachment[],
+    // Regenerating re-sends in the mode the original turn used. `mode` state
+    // may not have caught up yet - setMode in the same tick doesn't apply
+    // until the next render - so the caller passes it explicitly.
+    modeOverride?: CognitiveMode,
+    // The user has answered the mode question, either way. Stops the server
+    // asking again about a question it already asked about.
+    modeConfirmed = false,
+    // Set once the user explicitly skips the pre-answer "why" ("Answer
+    // without this") - a hard stop, regardless of how many rounds have run.
+    contextAcknowledged = false,
+    // How many context-gate rounds have already been answered for this turn.
+    // The server caps further asking at MAX_CONTEXT_ROUNDS.
+    contextRounds = 0,
+    // Forking overrides, used only by handleRegenerate/handleSubmitEdit below
+    // - a normal send from the composer passes neither. `regenerateOf` skips
+    // creating a new user message entirely (the server attaches the new
+    // answer as a sibling of the existing one); `parentId` attaches a new
+    // user message as a sibling of some earlier one, rather than continuing
+    // from wherever the conversation currently is.
+    fork?: { parentId?: string | null; regenerateOf?: string },
+    // The user has answered the refined-phrasing suggestion, either way -
+    // asking it as worded or keeping their own. Appended as a final param
+    // (rather than inserted earlier) so every existing call site above stays
+    // valid unchanged; regenerate is the one caller that needs to pass true
+    // explicitly, since re-answering an already-settled question must never
+    // interrupt with this suggestion again.
+    refinedConfirmed = false,
+    // Same reasoning, for the clarifying-options gate: appended last so
+    // nothing above needs updating, defaulting to re-eligible except for
+    // regenerate.
+    clarifyingConfirmed = false,
+  ) {
+    const sendMode = modeOverride ?? mode;
+    if (!sendMode) return;
+    setPendingContext(null);
+    setPendingRefined(null);
+    setPendingClarifyingOptions(null);
+
+    setError(null);
+    setSending(true);
+    setStatusLabel(null);
+    setIsTyping(false);
+
+    // Regenerating writes no new user row server-side, so there's nothing
+    // optimistic to show above the streaming answer - the question already
+    // on screen stays exactly where it is.
+    const userMessage: ChatMessage | null = fork?.regenerateOf
+      ? null
+      : {
+          id: `local-${Date.now()}`,
+          role: "user",
+          content,
+          mode_used: sendMode,
+          reasoning_lens: null,
+          confidence_score: null,
+          confidence_band: null,
+          avatar_expression: null,
+          avatar_gesture: null,
+          created_at: new Date().toISOString(),
+          counterfactual_content: null,
+          crux_text: null,
+          clarifier: null,
+          guidance: null,
+          decision_review: null,
+          thinking_review: null,
+          generated_image: null,
+          feedback: null,
+          parent_id: fork?.parentId ?? null,
+          sibling_index: 0,
+          sibling_count: 1,
+          sibling_ids: [],
+          claims: [],
+        };
+    if (userMessage) setMessages((prev) => [...prev, userMessage]);
+    setStreaming({ mode_used: sendMode, content: "" });
+    lastSendRef.current = { content, attachments, mode: sendMode };
+    earlyReviewRef.current = null;
+    earlyImageRef.current = null;
+    setSlowHint(false);
+
+    hasAnsweredRef.current = false;
+    pendingUserMessageIdRef.current = userMessage?.id ?? null;
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    lastActivityRef.current = Date.now();
+    const askedAtMs = Date.now();
+    track("question_asked", {
+      mode: sendMode,
+      attachments: attachments.length,
+      documents: attachments.filter((a) => a.kind === "document").length,
+      smart_switching: smartSwitching,
+      follow_up: messages.length > 0,
+    });
+
+    await streamChatMessage(
+      conversationId,
+      {
+        content,
+        mode: sendMode,
+        // Only where the picker exists. Sending it elsewhere would be
+        // harmless - the server ignores it outside those modes - but saying
+        // nothing is clearer about where the choice applies.
+        model: PICKABLE_MODES.has(sendMode) ? getModelChoice(sendMode) : null,
+        attachments: attachments.map((item) => ({
+          type: item.kind,
+          data: item.data,
+          mime_type: item.mimeType,
+          filename: item.filename,
+        })),
+        // Manual switching means the server never gets to ask.
+        mode_confirmed: modeConfirmed || !smartSwitching,
+        context_acknowledged: contextAcknowledged,
+        context_rounds: contextRounds,
+        refined_confirmed: refinedConfirmed,
+        clarifying_confirmed: clarifyingConfirmed,
+        parent_id: fork?.parentId,
+        regenerate_of: fork?.regenerateOf,
+      },
+      {
+        onStatus: (status) => {
+          setStatusLabel(STATUS_NAMES[status.phase] ?? status.label ?? null);
+          // The only phase the client acts on: the server's early warning
+          // that this answer will be a long one. Every other label stays
+          // under the hood (the rabbit only ever says Thinking).
+          if (status.phase === "slow" && sendMode !== "rapid") setSlowHint(true);
+          // Co-Creative: hold a square for the picture from the moment we
+          // know one is being made, so the answer does not read as finished
+          // while it is still coming.
+          if (status.phase === "image") {
+            setStreaming((prev) => (prev ? { ...prev, makingImage: true } : prev));
+          }
+        },
+        onReview: (review) => {
+          // Kept aside as well: the "answer" event's message carries no
+          // review yet (it is written to the row at "final"), and swapping
+          // the streaming bubble for it made the box vanish for the length
+          // of the verification and reappear - the exact flicker the order
+          // change was meant to remove.
+          earlyReviewRef.current = review;
+          setStreaming((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  decisionReview: review.decision_review ?? prev.decisionReview ?? null,
+                  thinkingReview: review.thinking_review ?? prev.thinkingReview ?? null,
+                }
+              : prev,
+          );
+        },
+        onSafety: (card) => {
+          // Before any text: the numbers go up first, over the rabbit.
+          setStreaming((prev) => (prev ? { ...prev, safety: card } : prev));
+        },
+        onImage: (image) => {
+          earlyImageRef.current = image;
+          setStreaming((prev) => (prev ? { ...prev, generatedImage: image } : prev));
+          // By the time a picture is ready the streaming bubble has usually
+          // been replaced by the saved message - generating one takes longer
+          // than writing the answer beside it - so the image has to be able
+          // to land on that message rather than only on a bubble that has
+          // gone. Without this it waited for "final", which is another
+          // twenty seconds of verification away.
+          setMessages((prev) => {
+            for (let i = prev.length - 1; i >= 0; i--) {
+              if (prev[i].role === "assistant") {
+                if (prev[i].generated_image) return prev;
+                const next = [...prev];
+                next[i] = { ...next[i], generated_image: image };
+                return next;
+              }
+            }
+            return prev;
+          });
+        },
+        onCrux: (text) => {
+          track("gist_shown", { mode: sendMode, after: durationBucket(Date.now() - askedAtMs) });
+          setSlowHint(false);
+          setStreaming((prev) => (prev ? { ...prev, crux: text } : prev));
+        },
+        onDelta: (text) => {
+          // Accumulated, not shown: the body is revealed whole when the
+          // stream finishes (MessageList renders only the gist and the
+          // rabbit until then).
+          setStreaming((prev) =>
+            prev ? { ...prev, content: prev.content + text } : prev,
+          );
+        },
+        onAnswer: (message, realUserMessage) => {
+          track("answer_shown", {
+            mode: message.mode_used ?? sendMode,
+            after: durationBucket(Date.now() - askedAtMs),
+          });
+          // The text is written and saved; only the analysis is outstanding.
+          // Waiting for that to finish before letting you type again is what
+          // made the app feel like it was still working long after it had
+          // clearly finished answering.
+          hasAnsweredRef.current = true;
+          setSlowHint(false);
+          setMessages((prev) => {
+            // Swap the optimistic question for the real, persisted row - it
+            // was displayed under a local placeholder id before the server
+            // ever assigned one, and anything that addresses it by id from
+            // here on (delete, in particular) needs the real one.
+            const withRealUser =
+              userMessage && realUserMessage
+                ? prev.map((m) => (m.id === userMessage.id ? realUserMessage : m))
+                : prev;
+            const early = earlyReviewRef.current;
+            const earlyImage = earlyImageRef.current;
+            const carried =
+              early || earlyImage
+                ? {
+                    ...message,
+                    decision_review: message.decision_review ?? early?.decision_review ?? null,
+                    thinking_review: message.thinking_review ?? early?.thinking_review ?? null,
+                    generated_image: message.generated_image ?? earlyImage ?? null,
+                  }
+                : message;
+            return [...withRealUser, carried];
+          });
+          setStreaming(null);
+          setSending(false);
+          setValidatingId(message.id);
+        },
+        onFinal: (finalEvent) => {
+          setMessages((prev) => {
+            const index = prev.findIndex((m) => m.id === finalEvent.message.id);
+            if (index === -1) return [...prev, finalEvent.message];
+            // Replace in place: reflection may have edited the text, and the
+            // claims and score arrive only now.
+            const next = [...prev];
+            next[index] = finalEvent.message;
+            return next;
+          });
+          setValidatingId(null);
+          setStreaming(null);
+          setSending(false);
+          if (finalEvent.conversation_title) {
+            // The shell owns the drawer row and the top bar's title; tell it.
+            DeviceEventEmitter.emit(CONVERSATION_RENAMED_EVENT, {
+              id: conversationId,
+              title: finalEvent.conversation_title,
+            });
+          }
+          if (finalEvent.avatar_cue) {
+            setAvatarCue({
+              expression: finalEvent.avatar_cue.expression as AvatarExpression,
+              gesture: finalEvent.avatar_cue.gesture as AvatarGesture,
+            });
+          }
+          setReacting(true);
+          setTimeout(() => setReacting(false), 700);
+        },
+        onModeSuggestion: (suggestion) => {
+          track("gate_shown", { kind: "mode", mode: sendMode, suggested: suggestion.suggested_mode });
+          // Nothing was written server-side, so the optimistic user message is
+          // rolled back too - it will be re-sent for real once they choose.
+          // (Regenerating never reaches this - the server skips the mode
+          // gate entirely for it - so there's no optimistic message to roll
+          // back in that case.)
+          if (userMessage) setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
+          setStreaming(null);
+          setSending(false);
+          const next = suggestion.suggested_mode as PickableMode;
+          if (lockedModesRef.current.includes(next)) {
+            // Outside what can be started today: show the plans, and answer
+            // in the mode they chose meanwhile - closing the dialog without
+            // choosing simply leaves them where they were.
+            track("locked_mode_tapped", { mode: next, via: "smart_switch" });
+            setUpsell(MODE_BY_VALUE[next]?.label ?? next);
+            void handleSend(
+              content, attachments, sendMode, true, contextAcknowledged, contextRounds,
+              undefined, refinedConfirmed, clarifyingConfirmed,
+            );
+            return;
+          }
+          // Automatic: switch, say so, and answer. The banner under the mode
+          // strip carries "answer in <old mode> instead" for as long as the
+          // answer is being written.
+          setMode(next);
+          const flags = { contextAcknowledged, contextRounds, refinedConfirmed, clarifyingConfirmed };
+          track("mode_switched_automatically", { from: sendMode, to: next });
+          setSwitchedFrom({ from: sendMode, to: next, content, attachments, flags });
+          setSwitchToast(true);
+          void handleSend(
+            content, attachments, next, true, contextAcknowledged, contextRounds,
+            undefined, refinedConfirmed, clarifyingConfirmed,
+          );
+        },
+        onContextQuestion: (asked) => {
+          track("gate_shown", { kind: "context", mode: sendMode });
+          // Nothing was written server-side, so the optimistic user message is
+          // rolled back the same way the mode gate rolls it back. `content`
+          // here is already the accumulated text (original message plus any
+          // earlier rounds) since it's what this call was sent with.
+          if (userMessage) setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
+          setPendingContext({
+            question: asked.question,
+            content,
+            attachments,
+            mode: sendMode,
+            rounds: contextRounds,
+          });
+          setStreaming(null);
+          setSending(false);
+        },
+        onRefinedQuestion: (suggestion) => {
+          track("gate_shown", { kind: "refined", mode: sendMode });
+          // Nothing was written server-side, so the optimistic user message is
+          // rolled back the same way the other two gates roll it back.
+          // (Regenerating never reaches this - it sends refinedConfirmed=true
+          // - so there's no optimistic message to roll back in that case.)
+          if (userMessage) setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
+          setPendingRefined({ suggestion, content, attachments, mode: sendMode });
+          setStreaming(null);
+          setSending(false);
+        },
+        onClarifyingOptions: (suggestion) => {
+          track("gate_shown", { kind: "options", mode: sendMode });
+          // Nothing was written server-side, so the optimistic user message is
+          // rolled back the same way the other gates roll it back.
+          // (Regenerating never reaches this - it sends
+          // clarifyingConfirmed=true - so there's no optimistic message to
+          // roll back in that case.)
+          if (userMessage) setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
+          setPendingClarifyingOptions({ suggestion, content, attachments, mode: sendMode });
+          setStreaming(null);
+          setSending(false);
+        },
+        onError: (detail, status) => {
+          // Healthcare refused before reading anything: not a failure, a
+          // precondition. The question goes back in the box, unasked.
+          if (sendMode === "healthcare" && (status === 428 || status === 409 || status === 403)) {
+            if (userMessage) setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
+            setDraft(content);
+            setStreaming(null);
+            setSending(false);
+            setSlowHint(false);
+            void fetchHealthConsent()
+              .then((state) => {
+                setHealthConsent(state);
+                if (status === 409) void openHealthcareTemporaryChat();
+              })
+              .catch(() => setError(detail));
+            return;
+          }
+          track("answer_failed", { mode: sendMode, after: durationBucket(Date.now() - askedAtMs) });
+          setError(detail);
+          setStreaming(null);
+          setSending(false);
+          setSlowHint(false);
+          setValidatingId(null);
+        },
+        onActivity: () => {
+          lastActivityRef.current = Date.now();
+        },
+        onDropped: () => {
+          void recoverAfterDrop();
+        },
+      },
+      controller.signal,
+    );
+  }
+
+  /** Cuts the current request off mid-stream. `streamChatMessage` resolves
+   *  quietly on an aborted signal (no `onError`), so the UI reset happens
+   *  here rather than waiting for a handler that will not fire. Before
+   *  `onAnswer`, nothing was persisted server-side - same as declining any
+   *  gate - so the optimistic question is rolled back too; after it, the
+   *  answer already exists and stays, just without the analysis that was
+   *  still running. */
+  function handleStop() {
+    abortControllerRef.current?.abort();
+    if (!hasAnsweredRef.current && pendingUserMessageIdRef.current) {
+      const id = pendingUserMessageIdRef.current;
+      setMessages((prev) => prev.filter((m) => m.id !== id));
+    }
+    setStreaming(null);
+    setSending(false);
+    setSlowHint(false);
+    setValidatingId(null);
+  }
+
+  /** The Quick answer button: stop the slow answer, ask again down the quick
+   *  path. `mode_confirmed` so the server never re-raises the mode gate. */
+  function handleQuickAnswer() {
+    const last = lastSendRef.current;
+    if (!last) return;
+    track("quick_answer_tapped", { mode: last.mode });
+    handleStop();
+    void handleSend(last.content, last.attachments, "rapid", true);
+  }
+
+  /** The stream died before it finished. The answer may well exist anyway:
+   *  the server writes and commits it before it starts checking claims, so
+   *  anything lost after that point is only the analysis. Re-read the
+   *  conversation and show whatever is there; say so plainly if the answer
+   *  never landed, instead of leaving the rabbit thinking for ever.
+   *
+   *  This is what a ten-minute "Thinking…" actually was: a connection that
+   *  went away - a phone changing network, a proxy timing out, the server
+   *  restarting, the app sent to the background - and a client with nothing
+   *  listening for that. */
+  const recoverAfterDrop = useCallback(async () => {
+    track("stream_dropped");
+    abortControllerRef.current?.abort();
+    const askedAt = pendingUserMessageIdRef.current;
+    try {
+      // Read immediately after the server has written an answer, so it must
+      // not come from the cache in lib/apiClient.
+      const fresh = await apiFetch<ChatMessage[]>(
+        `/chat/${conversationId}/messages`,
+        { fresh: true },
+      );
+      const answered =
+        fresh.length > 0 && fresh[fresh.length - 1].role === "assistant";
+      if (answered) {
+        setMessages(fresh);
+        setError(null);
+        setStreaming(null);
+        setSending(false);
+        setSlowHint(false);
+        setValidatingId(null);
+        return;
+      }
+      // Nothing was saved, so the question is still the user's to re-ask.
+      // Drop the optimistic copy, the way stopping does.
+      if (askedAt) setMessages((prev) => prev.filter((m) => m.id !== askedAt));
+      setError(
+        "The connection dropped before the answer came back. Nothing was lost - ask again.",
+      );
+    } catch {
+      setError("The connection dropped. Check your network and ask again.");
+    } finally {
+      setStreaming(null);
+      setSending(false);
+      setSlowHint(false);
+      setValidatingId(null);
+    }
+  }, [conversationId]);
+
+  /** The watchdog. `onDropped` covers a stream that ends or errors; this
+   *  covers the case where it does neither and simply stops arriving, which
+   *  is what a dead mobile connection looks like from inside fetch(). */
+  useEffect(() => {
+    if (!sending) return;
+    const timer = setInterval(() => {
+      const since = Date.now() - lastActivityRef.current;
+      if (lastActivityRef.current > 0 && since > SILENCE_MS) void recoverAfterDrop();
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [sending, recoverAfterDrop]);
+
+  // The fallback timer behind the slow hint: a stream with nothing to show
+  // after this long gets the button whether or not the server warned.
+  useEffect(() => {
+    if (!sending || hasAnsweredRef.current) return;
+    if (lastSendRef.current?.mode === "rapid") return;
+    const timer = setTimeout(() => setSlowHint(true), SLOW_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [sending]);
+
+  // The web bound Escape to "stop what's running" here. A phone has no
+  // Escape; the composer's Stop button (onStop below) is the way to cancel,
+  // and Android's back button keeps meaning "go back".
+
+  /** Save what was said on a call into the thread.
+   *
+   *  Best-effort: the call already happened, and failing to file it is not
+   *  worth an error banner over an answer the user already heard. Saved
+   *  unscored - see the endpoint for why.
+   */
+  async function handleCallEnded(
+    turns: { role: "user" | "assistant"; content: string }[],
+  ) {
+    if (!turns.length || !mode) return;
+    try {
+      const saved = await apiFetch<ChatMessage[]>(
+        `/chat/${conversationId}/call-transcript`,
+        { method: "POST", body: { mode, turns } },
+      );
+      setMessages((prev) => [...prev, ...saved]);
+    } catch {
+      // Nothing to say here that the user could act on.
+    }
+  }
+
+  /** Regenerate: an alternate answer to the same question, as a sibling of
+   *  the old one - nothing is deleted, so the original stays reachable via
+   *  the fork switcher's arrows.
+   *
+   *  Only the answer itself moves locally (dropped, then replaced by
+   *  whatever streams in) - the question above it is untouched, since the
+   *  server isn't writing a new one either. */
+  async function handleRegenerate(messageId: string) {
+    const index = messages.findIndex((m) => m.id === messageId);
+    if (index < 0) return;
+    const target = messages[index];
+    if (target.role !== "assistant") return;
+
+    setError(null);
+    setMessages((prev) => prev.slice(0, index));
+    try {
+      await handleSend(
+        "",
+        [],
+        target.mode_used as CognitiveMode,
+        true,
+        true,
+        0,
+        { regenerateOf: target.id },
+        true,
+        true,
+      );
+      // The streamed-in message carries no sibling count of its own - only
+      // list_messages computes that, by looking at every row sharing its
+      // parent. A reload is what turns "there are now two answers" into the
+      // switcher actually showing 1/2.
+      await reloadMessages();
+    } catch (err) {
+      setError(authErrorMessage(err));
+      await reloadMessages();
+    }
+  }
+
+  /** Edit: a new sibling of the edited message, not a rewrite of history -
+   *  the old wording and everything that answered it stays reachable via the
+   *  fork switcher, exactly like a regenerate does for an answer.
+   *
+   *  Applied only once the new text is submitted, not on the edit tap
+   *  itself - dropping the tail immediately would wipe the conversation
+   *  before the user had typed anything and make cancelling impossible. The
+   *  bubble holds the draft until then. */
+  async function handleSubmitEdit(messageId: string, content: string) {
+    const index = messages.findIndex((m) => m.id === messageId);
+    if (index < 0) return;
+    const target = messages[index];
+    const modeUsed = target.mode_used as CognitiveMode;
+
+    setError(null);
+    setMessages((prev) => prev.slice(0, index));
+    setMode(modeUsed);
+    try {
+      await handleSend(content, [], modeUsed, false, false, 0, {
+        parentId: target.parent_id,
+      });
+      // Same reason as handleRegenerate: the streamed-in messages don't know
+      // their own sibling count until something re-reads the tree.
+      await reloadMessages();
+    } catch (err) {
+      setError(authErrorMessage(err));
+      await reloadMessages();
+    }
+  }
+
+  /** Fork switcher: move to a different branch at the same point in the
+   *  conversation - a sibling answer, or a sibling edit and whatever
+   *  answered it - without generating anything new. The branch reopens
+   *  wherever it last left off (see the active-leaf endpoint), so this is
+   *  always followed by a full reload rather than trying to splice the new
+   *  branch into local state by hand. */
+  async function handleSwitchBranch(messageId: string) {
+    setError(null);
+    try {
+      await apiFetch<{ active_leaf_id: string }>(
+        `/chat/${conversationId}/active-leaf`,
+        { method: "PUT", body: { message_id: messageId } },
+      );
+      await reloadMessages();
+    } catch (err) {
+      setError(authErrorMessage(err));
+    }
+  }
+
+  /** Permanently removes a message and everything after it - unlike fork/
+   *  edit/regenerate, which only ever add a sibling, this actually deletes
+   *  rows. Same "mutate on the backend, then full reload" pattern as branch
+   *  switching: the client has no cheap way to locally recompute which
+   *  messages just disappeared. */
+  async function handleDeleteMessage(messageId: string) {
+    setError(null);
+    try {
+      await apiFetch(`/chat/${conversationId}/messages/${messageId}`, { method: "DELETE" });
+      await reloadMessages();
+    } catch (err) {
+      setError(authErrorMessage(err));
+    }
+  }
+
+  async function reloadMessages() {
+    try {
+      // Always from the server: this runs right after an edit, a regenerate
+      // or a branch switch, which is exactly when a moment-old answer is the
+      // wrong one.
+      setMessages(
+        await apiFetch<ChatMessage[]>(`/chat/${conversationId}/messages`, { fresh: true }),
+      );
+    } catch {
+      // The error from the failed action is already on screen; a second one
+      // about the recovery attempt would only add noise.
+    }
+  }
+
+  function releaseAudio() {
+    const player = audioRef.current;
+    audioRef.current = null;
+    try {
+      player?.pause();
+      player?.remove();
+    } catch {
+      // already released
+    }
+  }
+
+  /** Read an answer aloud. The web played the TTS response from a blob URL;
+   *  natively the bytes go to a cache file and expo-audio plays that. */
+  async function handlePlayAudio(messageId: string, text: string) {
+    if (playingMessageId === messageId) {
+      audioRef.current?.pause();
+      setPlayingMessageId(null);
+      return;
+    }
+
+    setError(null);
+    try {
+      const accessToken = getAccessToken();
+      const res = await fetch(`${API_BASE_URL}/audio/tts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail ?? `TTS failed with status ${res.status}`);
+      }
+      const bytes = await res.bytes();
+      const file = new File(Paths.cache, `tts-${messageId}.mp3`);
+      file.create({ overwrite: true });
+      await file.write(bytes);
+
+      releaseAudio();
+      // Heard with the ringer off, as the web was: reading an answer aloud is
+      // something the user just asked for.
+      await setAudioModeAsync({ playsInSilentMode: true }).catch(() => {});
+      const player = createAudioPlayer(file.uri);
+      audioRef.current = player;
+      player.addListener("playbackStatusUpdate", (status) => {
+        if (status.didJustFinish && audioRef.current === player) setPlayingMessageId(null);
+      });
+      setPlayingMessageId(messageId);
+      player.play();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't play audio");
+      setPlayingMessageId(null);
+    }
+  }
+
+  const avatarState: AvatarState = reacting
+    ? "reacting"
+    : playingMessageId !== null
+      ? "speaking"
+      : sending
+        ? streaming && streaming.content.length > 0
+          ? "speaking"
+          : "thinking"
+        : isTyping
+          ? "listening"
+          : "idle";
+
+  const liveGesture: AvatarGesture = mode ? GESTURE_BY_MODE[mode] : "none";
+  const avatarGesture: AvatarGesture =
+    avatarState === "thinking" || avatarState === "speaking"
+      ? liveGesture
+      : (avatarCue?.gesture ?? "none");
+  const avatarExpression: AvatarExpression =
+    avatarState === "reacting" || avatarState === "idle"
+      ? (avatarCue?.expression ?? "neutral")
+      : "neutral";
+
+  // A conversation is only "multi-mode" once a second mode has actually been
+  // used. Until then this is an ordinary chat and any splitting would be
+  // ceremony around a single column.
+  const tracks = groupByMode(messages);
+  const multiMode = tracks.length > 1;
+  // Deliberately not gated on `streaming`. It used to be, and the cost was a
+  // full teardown on every send: the carousel unmounted and the one-thread
+  // list mounted every message in the conversation at once. What that looked
+  // like from the outside was the view sliding back to Knowing and locking
+  // up for a few seconds. The answer now streams into its own track instead.
+  const showCarousel = multiMode && carousel;
+
+  // Which track is in focus is *derived* from the selected mode wherever that
+  // mode has a track, rather than tracked separately. The two used to be
+  // separate pieces of state synced one way only - focusing a track set the
+  // composer's mode, but choosing a mode you had already used left the
+  // carousel where it was, so tapping it looked like it did nothing.
+  // `activeTrack` survives only as the fallback for a mode with no track yet
+  // (one you have selected but not asked anything in), where there is nothing
+  // to move to and staying put is right.
+  const modeTrackIndex = tracks.findIndex((track) => track.mode === mode);
+  const activeIndex =
+    modeTrackIndex >= 0 ? modeTrackIndex : Math.min(activeTrack, tracks.length - 1);
+
+  const freshChat = isFreshChat(conversationId);
+
+  const messageListFor = (subset: ChatMessage[], streamingHere: StreamingMessage | null) => (
+    <MessageList
+      conversationId={conversationId}
+      messages={subset}
+      streaming={streamingHere}
+      playingMessageId={playingMessageId}
+      onPlayAudio={handlePlayAudio}
+      validatingId={validatingId}
+      onSubmitEdit={handleSubmitEdit}
+      loading={loadingHistory}
+      onRegenerate={handleRegenerate}
+      onDeleteMessage={handleDeleteMessage}
+      onSwitchBranch={handleSwitchBranch}
+      busy={sending}
+      thinkingLabel={phoneLayout ? statusLabel : null}
+      onClarifierAnswer={(answer) => handleSend(answer, [])}
+      // Switching mode from a nudge only changes the composer's mode - it
+      // does not re-ask anything. The answer you already have is still the
+      // answer; this sets up the next question.
+      onUseMode={(next) => setMode(next as CognitiveMode)}
+      onAskRefined={(question) => handleSend(question, [])}
+      emptyState={
+        <>
+          {temporary ? <TemporaryChatIntro /> : <ChatGreeting seed={conversationId} />}
+          <ModeDisclosure mode={mode} />
+        </>
+      }
+      emptyStateAvatar={
+        <AvatarPanel
+          state={avatarState}
+          gesture={avatarGesture}
+          expression={avatarExpression}
+          style={{ width: px(144), height: px(144) }}
+          tourId="companion"
+        />
+      }
+    />
+  );
+
+  const gateOpen = Boolean(pendingContext || pendingRefined || pendingClarifyingOptions);
+  const showGates = gateOpen || (healthBlocked && healthConsent !== null) || healthNeedsTemporary;
+  // Below the web's sm breakpoint the companion floats over the end of the
+  // thread instead of taking a row of its own.
+  const floatAvatar = windowWidth < 640;
+  // The composer's own bottom gap: the home indicator's, until the keyboard
+  // covers it.
+  const composerBottom = keyboardShown ? space(3) : Math.max(space(3), insets.bottom);
+
+  return (
+    // No page header. The shell's top bar already says which conversation
+    // this is, so a second title bar spent ~90px of a bounded-height column
+    // on repeating it - and that height comes straight out of the message
+    // area. The controls it held now live in the composer, which was already
+    // a row.
+    <View
+      ref={frameRef}
+      style={{ flex: 1, minHeight: 0 }}
+      onLayout={() => frameRef.current?.measureInWindow((_x, y) => setKeyboardOffset(y))}
+    >
+      {/* Lives here rather than in the composer: a finished call has to be
+          written into this conversation, and the composer doesn't know which
+          one it belongs to. */}
+      <LiveCallOverlay
+        open={callOpen}
+        onClose={() => setCallOpen(false)}
+        onEnded={handleCallEnded}
+      />
+
+      {/* The composer rides the keyboard: padding on iOS; Android resizes
+          the window itself (softwareKeyboardLayoutMode "resize"). */}
+      <KeyboardAvoidingView
+        style={s.column}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={keyboardOffset}
+      >
+        {/* The design's row at the head of a thread that has been answered in
+            more than one mode: "Single thread", then one pill per companion
+            that has spoken here. It replaces a "Split by mode" text button
+            that said what it would do but never which modes were in play. */}
+        {multiMode && (
+          <View style={s.pillRow}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={s.pillStrip}
+              {...fadePillEdges.scrollProps}
+            >
+              <ThreadPill
+                selected={!carousel}
+                onClick={() => setCarousel(false)}
+                icon={(color) => (
+                  <Svg viewBox="0 0 16 16" width={px(16)} height={px(16)} fill="none">
+                    <Path d="M3.3 12.7 12.7 3.3" stroke={color} strokeWidth="1.3" strokeLinecap="round" />
+                  </Svg>
+                )}
+                label="Single thread"
+              />
+              {tracks.map((track, index) => {
+                const entry = MODE_BY_VALUE[track.mode];
+                return (
+                  <ThreadPill
+                    key={track.mode}
+                    selected={carousel && index === activeIndex}
+                    onClick={() => {
+                      setCarousel(true);
+                      setActiveTrack(index);
+                      setMode(track.mode);
+                    }}
+                    icon={entry ? (color) => <MaskIcon src={entry.icon} size={px(16)} color={color} /> : null}
+                    label={companionLabel(companionNames, track.mode, entry?.label ?? track.mode)}
+                  />
+                );
+              })}
+            </ScrollView>
+            {fadePillEdges.moreStart && (
+              <LinearGradient
+                pointerEvents="none"
+                colors={[s.colors.canvas, `${s.colors.canvas}00`]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={[s.edgeFade, { left: 0 }]}
+              />
+            )}
+            {fadePillEdges.moreEnd && (
+              <LinearGradient
+                pointerEvents="none"
+                colors={[`${s.colors.canvas}00`, s.colors.canvas]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={[s.edgeFade, { right: 0 }]}
+              />
+            )}
+          </View>
+        )}
+
+        <View style={{ flex: 1, minHeight: 0 }}>
+          {showCarousel ? (
+            <ModeCarousel
+              tracks={tracks}
+              activeIndex={activeIndex}
+              onActiveIndexChange={(index) => {
+                setActiveTrack(index);
+                // Bringing a mode's track into focus is how you say "I want to
+                // continue in this one". Leaving the composer on whatever was
+                // last used meant reading the Knowing track and then, without
+                // any warning, asking your next question in Thinking.
+                const next = tracks[index]?.mode;
+                if (next) setMode(next);
+              }}
+              renderMessages={(subset, trackMode) =>
+                // The answer streams into the track it was asked in, not into
+                // whichever one happens to be in focus.
+                messageListFor(subset, streaming?.mode_used === trackMode ? streaming : null)
+              }
+            />
+          ) : (
+            messageListFor(messages, streaming)
+          )}
+        </View>
+
+        {/* The pre-answer gates sit between the thread and the composer and
+            never shrink: the thread gives way instead, and the cap (half the
+            screen) keeps a long card scrollable within itself rather than
+            pushing the composer off the bottom - the "follow-up boxes hidden
+            under the input" reports. */}
+        {showGates && (
+          <ScrollView
+            style={{ flexShrink: 0, maxHeight: windowHeight * 0.5 }}
+            keyboardShouldPersistTaps="handled"
+          >
+            <ErrorBoundary where="question-card" label="This question couldn't be shown.">
+              {/* Healthcare asks first - in place of answering, not as one
+                  more card under an answer. */}
+              {healthBlocked && healthConsent && (
+                <View style={{ marginBottom: space(3) }}>
+                  <HealthConsentCard
+                    state={healthConsent}
+                    onAgree={(language) => void agreeToHealthcare(language)}
+                    onDecline={() => setMode(DEFAULT_MODE)}
+                    busy={healthBusy}
+                    error={healthError}
+                  />
+                </View>
+              )}
+              {healthNeedsTemporary && (
+                <View style={s.notice}>
+                  <Text style={s.noticeText}>
+                    In {healthConsent?.jurisdiction.name}, Healthcare runs only in a temporary chat, deleted when you
+                    leave it.
+                  </Text>
+                  <Pressable
+                    onPress={() => void openHealthcareTemporaryChat()}
+                    accessibilityRole="button"
+                    style={({ pressed }) => [s.noticeButton, pressed && { backgroundColor: s.colors.brandDark }]}
+                  >
+                    <Text style={s.noticeButtonText}>Open a temporary Healthcare chat</Text>
+                  </Pressable>
+                </View>
+              )}
+              {pendingContext && (
+                <ContextQuestionCard
+                  // A new round is a new question with its own fresh text box,
+                  // not an update to the same one - without a key tied to the
+                  // round, the card's own internal draft state would carry
+                  // over from the previous round's box.
+                  key={pendingContext.rounds}
+                  question={pendingContext.question}
+                  busy={sending}
+                  onAnswer={(context) =>
+                    // Their answer joins the original message rather than
+                    // replacing it, so the transcript keeps both halves of what
+                    // they said and the model sees the whole thing as one turn.
+                    // The question itself is folded in too - the card asking it
+                    // unmounts the instant this fires (pendingContext is
+                    // cleared at the top of handleSend), so if the question
+                    // isn't in the message text itself it vanishes from the
+                    // transcript entirely, both on screen and in what gets
+                    // saved.
+                    // Not context_acknowledged=true here: answering a round
+                    // asks to be evaluated again (the gate may have one more
+                    // genuine question), not to be waved through. contextRounds
+                    // is what caps that, on the server.
+                    void handleSend(
+                      `${pendingContext.content}\n\n(Clardentity asked: "${pendingContext.question}")\n${context}`,
+                      pendingContext.attachments,
+                      pendingContext.mode,
+                      false,
+                      false,
+                      pendingContext.rounds + 1,
+                    )
+                  }
+                  onSkip={() =>
+                    // A hard stop regardless of round count - the only way to
+                    // cut the gate off before it decides to stop on its own.
+                    void handleSend(
+                      pendingContext.content,
+                      pendingContext.attachments,
+                      pendingContext.mode,
+                      false,
+                      true,
+                      pendingContext.rounds,
+                    )
+                  }
+                />
+              )}
+
+              {pendingRefined && (
+                <RefinedQuestionCard
+                  refinedQuestion={pendingRefined.suggestion.refined_question}
+                  reason={pendingRefined.suggestion.refinement_reason}
+                  busy={sending}
+                  onAskRefined={() =>
+                    // Same "(Clardentity asked: ...)" embedding the context
+                    // gate uses, so this shows up in the transcript as a real
+                    // exchange rather than the user's message silently
+                    // changing wording - the resent content genuinely differs
+                    // from what they typed, and the reason why should stay
+                    // visible.
+                    void handleSend(
+                      `${pendingRefined.content}\n\n(Clardentity asked: "Did you mean: ${pendingRefined.suggestion.refined_question}")\n${pendingRefined.suggestion.refined_question}`,
+                      pendingRefined.attachments,
+                      pendingRefined.mode,
+                      false,
+                      false,
+                      0,
+                      undefined,
+                      true,
+                    )
+                  }
+                  onKeepOriginal={() =>
+                    void handleSend(
+                      pendingRefined.content,
+                      pendingRefined.attachments,
+                      pendingRefined.mode,
+                      false,
+                      false,
+                      0,
+                      undefined,
+                      true,
+                    )
+                  }
+                />
+              )}
+
+              {pendingClarifyingOptions && (
+                <ClarifyingOptionsCard
+                  question={pendingClarifyingOptions.suggestion.question}
+                  options={pendingClarifyingOptions.suggestion.options}
+                  busy={sending}
+                  onAnswer={(answer) =>
+                    // Same "(Clardentity asked: ...)" embedding the other gates
+                    // use, so a tapped option (or a typed one) shows up in the
+                    // transcript as a real exchange rather than the next
+                    // message silently answering a question that isn't there.
+                    void handleSend(
+                      `${pendingClarifyingOptions.content}\n\n(Clardentity asked: "${pendingClarifyingOptions.suggestion.question}")\n${answer}`,
+                      pendingClarifyingOptions.attachments,
+                      pendingClarifyingOptions.mode,
+                      false,
+                      false,
+                      0,
+                      undefined,
+                      false,
+                      true,
+                    )
+                  }
+                  onSkip={() =>
+                    void handleSend(
+                      pendingClarifyingOptions.content,
+                      pendingClarifyingOptions.attachments,
+                      pendingClarifyingOptions.mode,
+                      false,
+                      false,
+                      0,
+                      undefined,
+                      false,
+                      true,
+                    )
+                  }
+                />
+              )}
+            </ErrorBoundary>
+          </ScrollView>
+        )}
+
+        {switchToast && switchedFrom && (
+          <View style={{ flexShrink: 0, paddingBottom: space(2) }}>
+            <ModeSwitchToast
+              from={MODE_BY_VALUE[switchedFrom.from]?.label ?? switchedFrom.from}
+              to={MODE_BY_VALUE[switchedFrom.to]?.label ?? switchedFrom.to}
+              onDismiss={dismissSwitchToast}
+              onRevert={() => {
+                // Stop the answer being written in the suggested mode and
+                // ask the same question in the one they had chosen, telling
+                // the server the mode is settled so it doesn't suggest again.
+                handleStop();
+                const { from, content, attachments, flags } = switchedFrom;
+                track("mode_switch_reverted", { to: from, via: "countdown" });
+                setSwitchToast(false);
+                setSwitchedFrom(null);
+                setMode(from);
+                void handleSend(
+                  content, attachments, from, true, flags.contextAcknowledged, flags.contextRounds,
+                  undefined, flags.refinedConfirmed, flags.clarifyingConfirmed,
+                );
+              }}
+            />
+          </View>
+        )}
+        {sending && slowHint && !streaming?.crux && (
+          // Hovers above the composer, the way a chat app offers the short
+          // version while the long one is being written.
+          <Animated.View entering={FadeIn.duration(300)} style={s.quickRow}>
+            <Pressable
+              onPress={handleQuickAnswer}
+              accessibilityRole="button"
+              accessibilityHint="Stop this answer and get an instant, unchecked one instead"
+              style={({ pressed }) => [s.quick, pressed && { opacity: 0.9 }]}
+            >
+              <Svg viewBox="0 0 24 24" width={px(14)} height={px(14)} fill="none">
+                <Path
+                  d="M13 2 4 14h7l-1 8 9-12h-7z"
+                  stroke={s.colors.inkInverse}
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </Svg>
+              <Text style={s.quickText}>Quick answer</Text>
+            </Pressable>
+          </Animated.View>
+        )}
+
+        {error && (
+          <View style={s.error}>
+            <Text style={s.errorText}>{error}</Text>
+          </View>
+        )}
+
+        {/* The composer column: the rail 8px above the card - the design's
+            measurements. No rule above it; on this canvas the card's own
+            shadow is the separation. */}
+        <View style={[s.composer, { paddingBottom: composerBottom }]}>
+          {/* The companion sits above the rail rather than beside it: the
+              design gives the rail the full width, so there is no room on
+              that row any more. It appears with the first answer - the new
+              chat the design draws has nothing above the rail, and an
+              expression tracking an answer that hasn't been given yet is an
+              expression about nothing. */}
+          {/* On a phone the companion floats over the end of the thread
+              instead of taking a row of its own: that row was an opaque band
+              across the screen that cut the chat off above it. Just the
+              figure, nothing behind it; the thread keeps scrolling under it
+              (MessageList leaves room at the bottom so the last line can
+              clear it). A question card or the switch notice sits exactly
+              where the figure floats, and it covered their buttons - it steps
+              aside while one is open. Taps always pass through (it's a
+              picture). */}
+          {messages.length > 0 && !(floatAvatar && (gateOpen || (switchToast && switchedFrom))) && (
+            <View pointerEvents={floatAvatar ? "none" : "auto"} style={floatAvatar ? s.avatarFloat : s.avatarRow}>
+              <AvatarPanel
+                state={avatarState}
+                gesture={avatarGesture}
+                expression={avatarExpression}
+                style={{ width: px(64), height: px(64) }}
+                tourId="companion"
+              />
+            </View>
+          )}
+          <View style={{ flexDirection: "row", alignItems: "center" }}>
+            {/* flex 1 so the unselected state - which renders all the modes
+                as cards - gets the full row. */}
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <ModeSelector
+                value={mode}
+                folded={(composerFocused || shortScreen) && !railOpen}
+                onUnfold={() => setRailOpen(true)}
+                holdFocus={railOpen}
+                onChange={(next) => {
+                  // Picking a mode by hand supersedes any accepted suggestion.
+                  track("mode_picked", { mode: next });
+                  setSwitchedFrom(null);
+                  setMode(next);
+                  // Opened from the chip mid-message: the chat box kept its
+                  // focus, so fold again around the new mode.
+                  if (railOpen) setRailOpen(false);
+                }}
+                disabled={sending}
+                onLocked={(locked) => {
+                  track("locked_mode_tapped", { mode: locked, via: "picker" });
+                  setUpsell(MODE_BY_VALUE[locked]?.label ?? locked);
+                }}
+              />
+            </View>
+          </View>
+          {/* Learning only, and only until it has been answered once - the
+              card returns null when the profile already carries a role, so
+              this is a mount rather than a condition on the answer. */}
+          {mode === "learning" && <LearningRoleCard />}
+          {switchedFrom && !switchToast && mode === switchedFrom.to && (
+            <View style={s.banner}>
+              <Text style={s.bannerText}>
+                Switched to {MODE_BY_VALUE[switchedFrom.to]?.label ?? switchedFrom.to} - it suits this question better.
+              </Text>
+              {sending ? (
+                <Pressable
+                  accessibilityRole="button"
+                  hitSlop={8}
+                  onPress={() => {
+                    // Stop the answer being written and ask the same
+                    // question in the mode they had chosen, telling the
+                    // server the mode is settled so it doesn't suggest again.
+                    handleStop();
+                    setMode(switchedFrom.from);
+                    const { from, content, attachments, flags } = switchedFrom;
+                    track("mode_switch_reverted", { to: from, via: "banner" });
+                    setSwitchedFrom(null);
+                    void handleSend(
+                      content, attachments, from, true, flags.contextAcknowledged, flags.contextRounds,
+                      undefined, flags.refinedConfirmed, flags.clarifyingConfirmed,
+                    );
+                  }}
+                >
+                  <Text style={s.bannerLink}>
+                    Answer in {MODE_BY_VALUE[switchedFrom.from]?.label ?? switchedFrom.from} instead
+                  </Text>
+                </Pressable>
+              ) : (
+                <Pressable
+                  accessibilityRole="button"
+                  hitSlop={8}
+                  onPress={() => {
+                    setMode(switchedFrom.from);
+                    setSwitchedFrom(null);
+                  }}
+                >
+                  <Text style={s.bannerLink}>Back to {MODE_BY_VALUE[switchedFrom.from]?.label ?? switchedFrom.from}</Text>
+                </Pressable>
+              )}
+              <Pressable
+                onPress={() => setSwitchedFrom(null)}
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss"
+                hitSlop={10}
+                style={{ marginLeft: "auto", paddingHorizontal: space(1) }}
+              >
+                <Text style={s.bannerDismiss}>×</Text>
+              </Pressable>
+            </View>
+          )}
+          <MessageInput
+            disabled={!mode || sending || !online || healthBlocked || healthNeedsTemporary}
+            disabledReason={
+              !online
+                ? "You're offline - what you've typed stays here until you reconnect"
+                : healthBlocked || healthNeedsTemporary
+                  ? "Healthcare is waiting on the card above"
+                : !mode
+                  ? "Select a cognitive mode above to start typing"
+                  : // The box is also disabled while an answer is being
+                    // written, and saying nothing here left it showing the
+                    // "select a mode" placeholder - telling the user to do
+                    // something they had plainly already done, with the mode
+                    // lit three inches below it.
+                    sending
+                    ? "Writing the answer…"
+                    : undefined
+            }
+            value={draft}
+            onChange={setDraft}
+            onSend={handleSend}
+            onTypingChange={setIsTyping}
+            textareaRef={composerRef}
+            onStartCall={
+              // A call in Healthcare is health information too: same card first.
+              mode && !healthBlocked && !healthNeedsTemporary ? () => setCallOpen(true) : undefined
+            }
+            isGenerating={sending}
+            onStop={handleStop}
+            mode={mode}
+            // A greyed model, tapped outside Co-Creative: the plans, as for
+            // a locked companion.
+            onModelLocked={(label) => setUpsell(label)}
+            trailing={
+              mode ? (
+                // Not drawn in the design, and not droppable either: smart
+                // switching is a feature with a promise attached, and a
+                // promise the user cannot see the state of is worse than no
+                // promise. It sits with the model chip, which is the other
+                // control describing how an answer gets made.
+                <Pressable
+                  ref={tourRef("switching-toggle")} collapsable={false}
+                  onPress={() => setSmartSwitching(!smartSwitching)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Switching: ${smartSwitching ? "Smart" : "Manual"}`}
+                  accessibilityHint={
+                    smartSwitching
+                      ? "Smart: a question that fits another mode better is answered there automatically, with a way back. Tap for manual."
+                      : "Manual: the mode is whatever you pick; it never switches. Tap for smart."
+                  }
+                  hitSlop={{ top: 6, bottom: 6 }}
+                  style={({ pressed }) => [s.switching, pressed && { backgroundColor: s.colors.surfaceHover }]}
+                >
+                  <Text style={s.switchingText}>{smartSwitching ? "Smart" : "Manual"}</Text>
+                </Pressable>
+              ) : undefined
+            }
+          />
+          {/* Once a conversation is under way the greeting's disclosure has
+              scrolled away; in the two companions where it matters it stays
+              under the box (India's telemedicine and DPDP guidance both ask
+              for a label that stays on screen). */}
+          {messages.length > 0 && (
+            <ModeDisclosure mode={mode} style={{ marginTop: space(1.5), paddingHorizontal: space(2) }} />
+          )}
+        </View>
+        {/* On a new chat the design does not sit the composer on the floor:
+            the rail and the box are centred in the space under the top bar,
+            with the empty message list as the spacer above and this one
+            below. Once there are messages the list takes the room back and
+            the composer settles to the bottom, where it belongs. */}
+        {/* A chat this app just created is known to be empty, so on a phone
+            it is centred while its (empty) history loads too - otherwise the
+            composer sat on the floor for a beat and then jumped up. */}
+        {messages.length === 0 && !streaming && !sending && (!loadingHistory || (phoneLayout && freshChat)) && (
+          <View style={{ flex: 1, minHeight: 0 }} />
+        )}
+        <UpgradeDialog open={upsell !== null} trigger={upsell} onClose={() => setUpsell(null)} />
+      </KeyboardAvoidingView>
+    </View>
+  );
+}
+
+/** One pill in the thread's mode row. Filled in the secondary ink when it is
+ *  the view you are in, a hairline in the muted ink when it is not - the two
+ *  states the design draws. `icon` is drawn in the pill's text colour. */
+function ThreadPill({
+  selected,
+  onClick,
+  icon,
+  label,
+}: {
+  selected: boolean;
+  onClick: () => void;
+  icon: ((color: string) => ReactNode) | null;
+  label: string;
+}) {
+  const s = useThemedStyles(styles);
+  const color = selected ? "#ffffff" : s.colors.ink;
+  return (
+    <Pressable
+      onPress={onClick}
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+      style={({ pressed }) => [
+        s.threadPill,
+        selected ? s.threadPillSelected : pressed && { backgroundColor: s.colors.surfaceHover },
+      ]}
+    >
+      {icon?.(color)}
+      <Text style={[s.threadPillText, { color }]} numberOfLines={1}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+const styles = (c: Colors) => ({
+  colors: c,
+  ...StyleSheet.create({
+    column: { flex: 1, minHeight: 0, width: "100%", maxWidth: 973, alignSelf: "center", paddingHorizontal: space(4) },
+    pillRow: { flexShrink: 0, paddingTop: px(37), paddingBottom: space(4) },
+    pillStrip: { flexGrow: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: space(1) },
+    edgeFade: { position: "absolute", top: px(37), bottom: space(4), width: 28 },
+    threadPill: {
+      height: px(30),
+      flexShrink: 0,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: space(1),
+      borderRadius: radius.full,
+      borderWidth: 1,
+      borderColor: c.inkMuted,
+      paddingHorizontal: px(9),
+    },
+    threadPillSelected: { borderColor: "transparent", backgroundColor: c.inkSecondary },
+    threadPillText: { fontFamily: fonts.regular, fontSize: fontSize.sm },
+    notice: {
+      marginBottom: space(3),
+      borderRadius: radius["2xl"],
+      borderWidth: 1,
+      borderColor: c.hairline,
+      backgroundColor: c.surface,
+      paddingHorizontal: space(4),
+      paddingVertical: space(3),
+    },
+    noticeText: { fontFamily: fonts.regular, fontSize: fontSize.sm, color: c.ink },
+    noticeButton: {
+      marginTop: space(2),
+      alignSelf: "flex-start",
+      borderRadius: radius.full,
+      backgroundColor: c.brand,
+      paddingHorizontal: space(4),
+      paddingVertical: space(1.5),
+    },
+    noticeButtonText: { fontFamily: fonts.medium, fontSize: fontSize.sm, color: "#ffffff" },
+    quickRow: { flexShrink: 0, alignItems: "center", paddingBottom: space(1) },
+    quick: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: space(1.5),
+      borderRadius: radius.lg,
+      backgroundColor: c.ink,
+      paddingHorizontal: space(3),
+      paddingVertical: space(1.5),
+      shadowColor: "#000",
+      shadowOpacity: 0.15,
+      shadowRadius: 10,
+      shadowOffset: { width: 0, height: 6 },
+      elevation: 6,
+    },
+    quickText: { fontFamily: fonts.medium, fontSize: fontSize.sm, color: c.inkInverse },
+    error: {
+      marginBottom: space(3),
+      flexShrink: 0,
+      borderRadius: radius.lg,
+      borderWidth: 1,
+      borderColor: c.bandLowBorder,
+      backgroundColor: c.bandLowBg,
+      paddingHorizontal: space(3),
+      paddingVertical: space(2),
+    },
+    errorText: { fontFamily: fonts.regular, fontSize: fontSize.sm, color: c.bandLow },
+    composer: { position: "relative", width: "100%", maxWidth: 925, alignSelf: "center", flexShrink: 0, gap: space(2), paddingTop: space(3) },
+    avatarFloat: { position: "absolute", bottom: "100%", right: space(1), zIndex: 10 },
+    avatarRow: { flexDirection: "row", justifyContent: "flex-end", paddingRight: space(1) },
+    banner: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      alignItems: "center",
+      gap: space(2),
+      borderRadius: radius.lg,
+      borderWidth: 1,
+      borderColor: c.brandBorder,
+      backgroundColor: c.brandSoft,
+      paddingHorizontal: space(3),
+      paddingVertical: space(1.5),
+    },
+    bannerText: { fontFamily: fonts.regular, fontSize: fontSize.xs, color: c.inkSecondary },
+    bannerLink: { fontFamily: fonts.medium, fontSize: fontSize.xs, color: c.brand },
+    bannerDismiss: { fontFamily: fonts.regular, fontSize: fontSize.sm, color: c.inkMuted },
+    switching: { flexShrink: 0, borderRadius: radius.md, paddingHorizontal: space(2), paddingVertical: space(1) },
+    switchingText: { fontFamily: fonts.regular, fontSize: fontSize.sm, color: c.inkMuted },
+  }),
+});
