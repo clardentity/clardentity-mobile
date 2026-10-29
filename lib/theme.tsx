@@ -271,6 +271,12 @@ export const radius = {
   full: 9999,
 } as const;
 
+/** The web's phone rule for icon buttons inside a message (globals.css,
+ *  `[data-testid="message"] button[aria-label]`): a 44pt box with the icon
+ *  centred in it. It is what spaces those rows out - copy, regenerate and
+ *  delete; helpful and not; the versions; the confidence badge. */
+export const messageButton = { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" } as const;
+
 /** Outfit is the app's sans (globals.css:420); Geist Mono for code. Android
  *  needs a family per weight, so weight is picked by name, not fontWeight. */
 export const fonts = {

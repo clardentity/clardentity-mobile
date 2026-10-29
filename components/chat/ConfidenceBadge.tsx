@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import type { Claim } from "@/lib/sse";
-import { fonts, fontSize, px, radius, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
+import { fonts, fontSize, messageButton, px, radius, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
 import { PopoverSheet } from "@/components/chat/PopoverSheet";
 
 /** SRS §9.3 bands. Colour is deliberately the strongest signal on a message,
@@ -139,8 +139,8 @@ export function ConfidenceBadge({
 const styles = (c: Colors) =>
   StyleSheet.create({
     badge: {
+      ...messageButton,
       flexDirection: "row",
-      alignItems: "center",
       flexShrink: 0,
       gap: space(1.5),
       borderRadius: radius.md,

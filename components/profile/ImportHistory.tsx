@@ -102,11 +102,16 @@ export function ImportHistory({ onImported }: { onImported?: () => void }) {
     <View>
       <View style={{ gap: space(1) }}>
         {WHERE_TO_GET_IT.map((source) => (
-          <AppText key={source.name} tone="secondary" style={lh}>
-            <AppText weight="medium">{source.name}</AppText>
-            {"  "}
-            {source.path} <AppText tone="secondary" style={{ opacity: 0.7 }}>({source.file})</AppText>
-          </AppText>
+          // Two pieces that wrap, as the web's <dt>/<dd>: when the path does
+          // not fit beside the name it drops to its own line, whole.
+          <View key={source.name} style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "baseline", columnGap: space(2) }}>
+            <AppText weight="medium" style={lh}>
+              {source.name}
+            </AppText>
+            <AppText tone="secondary" style={lh}>
+              {source.path} <AppText tone="secondary" style={{ opacity: 0.7 }}>({source.file})</AppText>
+            </AppText>
+          </View>
         ))}
       </View>
 

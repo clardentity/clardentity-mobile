@@ -1,10 +1,15 @@
 /* Ids in a route come from wherever the link came from - a notification, an
- * email, another app - not only from this app. Every chat and workspace id
- * the server hands out is a UUID, so anything else is turned away at the
- * route rather than spliced into an API path. */
+ * email, another app - not only from this app, so anything that could change
+ * the shape of an API path (a slash, a dot, a query) is turned away at the
+ * route rather than spliced in.
+ *
+ * Not a UUID check, though every id the server hands out today is one: /start
+ * opens whatever chat the server names, and a strict check bounced any other
+ * id straight back to /start, which opened it again - a redirect loop that
+ * locked the app (the demo backend's "c1" ids hit it). */
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ROUTE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
-export function isUuid(value: unknown): value is string {
-  return typeof value === "string" && UUID.test(value);
+export function isRouteId(value: unknown): value is string {
+  return typeof value === "string" && ROUTE_ID.test(value);
 }

@@ -46,7 +46,7 @@ export function AuthScreen({ children, wide }: { children: ReactNode; wide?: boo
         {/* max-w-sm on the forms, max-w-lg on the welcome questions. */}
         <View style={{ width: "100%", maxWidth: wide ? px(512) : px(384) }}>
           <View style={{ marginBottom: space(6), alignItems: "center" }}>
-            <Wordmark />
+            <Wordmark style={{ alignSelf: "center" }} />
           </View>
           {children}
         </View>

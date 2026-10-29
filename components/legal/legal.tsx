@@ -1,5 +1,5 @@
 import { Link, type Href } from "expo-router";
-import type { ReactNode } from "react";
+import { isValidElement, type ReactNode } from "react";
 import { Linking, View } from "react-native";
 import { AppText } from "@/components/ui/primitives";
 import { fonts, fontSize, space, useColors } from "@/lib/theme";
@@ -56,19 +56,51 @@ export function Section({ n, title, children }: { n: number; title: string; chil
  *  sideways on a phone; stacking the row instead - its first cell as the
  *  heading, the rest under their column names - reads without any scrolling
  *  at all. Same props, so the documents port unchanged. */
+/** Plain text of a cell, for sizing its column. */
+function textOf(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join("");
+  if (isValidElement<{ children?: ReactNode }>(node)) return textOf(node.props.children);
+  return "";
+}
+
+/** Column shares as a browser's automatic table layout works them out, in
+ *  characters: every column gets its longest word, and the room left over is
+ *  shared out by how much more each column would take on one line. */
+function columnShares(head: string[], rows: ReactNode[][]): number[] {
+  const cols = head.map((h, j) => [h, ...rows.map((r) => textOf(r[j]))]);
+  const min = cols.map((cells) => Math.max(...cells.flatMap((t) => t.split(/\s+/).map((w) => w.length))));
+  const max = cols.map((cells) => Math.max(...cells.map((t) => t.length)));
+  const room = 46; // characters across a phone, less the cells' right padding
+  const spare = Math.max(0, room - min.reduce((a, b) => a + b, 0));
+  const extra = max.map((m, j) => m - min[j]);
+  const totalExtra = extra.reduce((a, b) => a + b, 0) || 1;
+  return min.map((m, j) => m + (spare * extra[j]) / totalExtra);
+}
+
+/** The web's table, as a table: a heading row over hairline-ruled rows, the
+ *  columns sized as the browser sizes them. */
 export function Table({ head, rows }: { head: string[]; rows: ReactNode[][] }) {
   const c = useColors();
+  const shares = columnShares(head, rows);
+  const lineHeight = fontSize.sm * 1.43;
   return (
-    <View style={{ borderTopWidth: 1, borderTopColor: c.hairlineStrong }}>
+    <View>
+      <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: c.hairlineStrong, paddingBottom: space(2) }}>
+        {head.map((h, j) => (
+          <View key={h} style={{ flex: shares[j], paddingRight: space(4) }}>
+            <AppText weight="medium" style={{ lineHeight }}>
+              {h}
+            </AppText>
+          </View>
+        ))}
+      </View>
       {rows.map((row, i) => (
-        <View key={i} style={{ borderBottomWidth: 1, borderBottomColor: c.hairline, paddingVertical: space(2.5), gap: space(1) }}>
-          <AppText weight="medium">{row[0]}</AppText>
-          {row.slice(1).map((cell, j) => (
-            <View key={j}>
-              <AppText size="xs" tone="muted">
-                {head[j + 1]}
-              </AppText>
-              <AppText tone="secondary" style={{ lineHeight: fontSize.sm * 1.5 }}>
+        <View key={i} style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: c.hairline, paddingVertical: space(2) }}>
+          {row.map((cell, j) => (
+            <View key={j} style={{ flex: shares[j], paddingRight: space(4) }}>
+              <AppText tone="secondary" style={{ lineHeight }}>
                 {cell}
               </AppText>
             </View>

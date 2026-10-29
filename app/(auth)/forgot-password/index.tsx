@@ -14,7 +14,11 @@ export default function ForgotPasswordPage() {
   const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit() {
-    if (submitting || !email.trim()) return;
+    if (submitting) return;
+    if (!email.trim()) {
+      setError("Enter your email.");
+      return;
+    }
     setError(null);
     setSubmitting(true);
     try {
@@ -78,7 +82,7 @@ export default function ForgotPasswordPage() {
 
           {error && <ErrorNotice>{error}</ErrorNotice>}
 
-          <Button variant="primary" onPress={() => void handleSubmit()} disabled={submitting || !email.trim()}>
+          <Button variant="primary" onPress={() => void handleSubmit()} disabled={submitting}>
             {submitting ? "Sending…" : "Send reset link"}
           </Button>
 

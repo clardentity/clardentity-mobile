@@ -326,6 +326,9 @@ export function MessageInput({
             value={value}
             onChangeText={handleChange}
             multiline
+            // react-native-web draws a multiline box two rows tall by default;
+            // a phone sizes it to its text, one row when empty, as the web does.
+            {...(Platform.OS === "web" ? ({ rows: 1 } as object) : null)}
             // Return is the new-line key, as on the web's touch layout: there
             // is no Shift to hold, and sending on Return meant half-written
             // questions went out. The arrow is the only way to send.

@@ -22,11 +22,12 @@ export default function LegalLayout() {
     scrollRef.current?.scrollTo({ y: 0, animated: false });
   }, [pathname]);
 
-  const linkStyle = (href: string) => ({
+  // Both links the same grey, the open document included, as on the web.
+  const linkStyle = {
     fontFamily: fonts.regular,
     fontSize: fontSize.sm,
-    color: pathname === href ? c.ink : c.inkSecondary,
-  });
+    color: c.inkSecondary,
+  };
 
   return (
     <View style={{ flex: 1, backgroundColor: c.canvas }}>
@@ -57,10 +58,10 @@ export default function LegalLayout() {
               Back still returns to wherever they were opened from (the
               sign-up form) instead of stepping through each one read. */}
           <View style={{ flexDirection: "row", alignItems: "center", gap: space(4) }}>
-            <Link href="/privacy" replace style={linkStyle("/privacy")}>
+            <Link href="/privacy" replace style={linkStyle}>
               Privacy
             </Link>
-            <Link href="/terms" replace style={linkStyle("/terms")}>
+            <Link href="/terms" replace style={linkStyle}>
               Terms
             </Link>
             <ThemeToggle />

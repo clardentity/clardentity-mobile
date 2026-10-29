@@ -26,7 +26,18 @@ export default function RegisterPage() {
   const canSubmit = Boolean(email.trim()) && password.length >= 8 && acceptedTerms;
 
   async function handleSubmit() {
-    if (submitting || !canSubmit) return;
+    if (submitting) return;
+    // The web leaves these to the browser's own required-field prompts.
+    if (!canSubmit) {
+      setError(
+        !email.trim()
+          ? "Enter your email."
+          : password.length < 8
+            ? "Use at least 8 characters for your password."
+            : "Agree to the Terms of Service and Privacy Policy to continue.",
+      );
+      return;
+    }
     setError(null);
     setSubmitting(true);
     try {
@@ -141,7 +152,7 @@ export default function RegisterPage() {
 
         {error && <ErrorNotice>{error}</ErrorNotice>}
 
-        <Button variant="primary" onPress={() => void handleSubmit()} disabled={submitting || !canSubmit}>
+        <Button variant="primary" onPress={() => void handleSubmit()} disabled={submitting}>
           {submitting ? "Creating account…" : "Sign up"}
         </Button>
 

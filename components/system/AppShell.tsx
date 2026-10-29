@@ -981,9 +981,13 @@ const styles = (c: Colors) =>
       backgroundColor: c.surface,
       paddingHorizontal: space(4),
     },
+    // The web's .tap-target: a 44pt box on touch screens, which also sets
+    // how far apart the top bar's icons sit.
     iconButton: {
       alignItems: "center",
       justifyContent: "center",
+      minWidth: 44,
+      minHeight: 44,
       borderRadius: radius.md,
       padding: space(1.5),
     },
