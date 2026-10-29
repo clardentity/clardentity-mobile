@@ -80,6 +80,58 @@ type Conversation = {
 
 type AvatarCue = { expression: AvatarExpression; gesture: AvatarGesture };
 
+/** The pre-answer gates already settled for a turn, so a re-send doesn't
+ *  ask again. Carried whole whenever a turn is replayed (a mode switch, or
+ *  its revert) - dropping one had the server repeat a question it had
+ *  already asked. */
+type GateFlags = {
+  // Set once the user explicitly skips the pre-answer "why" ("Answer
+  // without this") - a hard stop, regardless of how many rounds have run.
+  contextAcknowledged: boolean;
+  // How many context-gate rounds have already been answered for this turn.
+  // The server caps further asking at MAX_CONTEXT_ROUNDS.
+  contextRounds: number;
+  // The user has answered the refined-phrasing suggestion, either way -
+  // asking it as worded or keeping their own.
+  refinedConfirmed: boolean;
+  // Same, for the clarifying-options gate.
+  clarifyingConfirmed: boolean;
+};
+
+/** Everything a send can carry beyond its text. A plain send from the
+ *  composer passes none of it. */
+type SendOptions = Partial<GateFlags> & {
+  // Regenerating re-sends in the mode the original turn used. `mode` state
+  // may not have caught up yet - setMode in the same tick doesn't apply
+  // until the next render - so the caller passes it explicitly.
+  mode?: CognitiveMode;
+  // The user has answered the mode question, either way. Stops the server
+  // asking again about a question it already asked about.
+  modeConfirmed?: boolean;
+  // Forking, used only by handleRegenerate/handleSubmitEdit. `regenerateOf`
+  // skips creating a new user message entirely (the server attaches the new
+  // answer as a sibling of the existing one); `parentId` attaches a new user
+  // message as a sibling of some earlier one, rather than continuing from
+  // wherever the conversation currently is.
+  fork?: { parentId?: string | null; regenerateOf?: string };
+};
+
+/** A send the server stopped to ask about before answering, held so either
+ *  answer can replay it. At most one is open at a time: every send clears
+ *  it, and the server raises at most one gate per send. */
+type PendingSend = { content: string; attachments: PendingAttachment[]; mode: CognitiveMode };
+type PendingGate =
+  // "Why" before answering. `content` is the accumulated send so far (the
+  // original message plus any earlier rounds already answered) so a reply
+  // is appended rather than replacing it; `rounds` tells the resend how
+  // many have already run - the gate can fire more than once per turn, up
+  // to a cap on the server.
+  | (PendingSend & { kind: "context"; question: string; rounds: number })
+  // "Did you mean" - a single yes/no suggestion.
+  | (PendingSend & { kind: "refined"; suggestion: RefinedQuestionSuggestion })
+  // "Which did you mean", with tappable options - also a single exchange.
+  | (PendingSend & { kind: "options"; suggestion: ClarifyingOptionsSuggestion });
+
 /** The stream's named phases (TECHNICAL_GUIDE §5), as the indicator says them. */
 const STATUS_NAMES: Record<string, string> = {
   searching: "Searching the web",
@@ -163,7 +215,7 @@ export function ChatView({ conversationId }: { conversationId: string }) {
     // The gate flags the switched send carried, so answering in the old
     // mode instead re-sends with them intact - without them the server
     // asked the context question a second time, in the other mode.
-    flags: { contextAcknowledged: boolean; contextRounds: number; refinedConfirmed: boolean; clarifyingConfirmed: boolean };
+    flags: GateFlags;
   } | null>(null);
   // The four-second card over the composer right after an automatic switch
   // (see ModeSwitchToast). Cleared when it runs out, when reverted, or when
@@ -277,36 +329,11 @@ export function ChatView({ conversationId }: { conversationId: string }) {
   const [carousel, setCarousel] = useState(false);
   const [activeTrack, setActiveTrack] = useState(0);
   const [callOpen, setCallOpen] = useState(false);
-  // The server asked why before answering. Holds the accumulated send so far
-  // (the original message plus any earlier rounds already answered) so a
-  // reply is appended rather than replacing it, and `rounds` so the resend
-  // can tell the server how many rounds have already run - the gate can fire
-  // more than once per turn, up to a cap on the server.
-  const [pendingContext, setPendingContext] = useState<{
-    question: string;
-    content: string;
-    attachments: PendingAttachment[];
-    mode: CognitiveMode;
-    rounds: number;
-  } | null>(null);
-  // The server asked "did you mean" before answering. Holds the original
-  // send so either choice can replay it - same shape as pendingMode, since
-  // this is a single yes/no suggestion too, not a multi-round exchange.
-  const [pendingRefined, setPendingRefined] = useState<{
-    suggestion: RefinedQuestionSuggestion;
-    content: string;
-    attachments: PendingAttachment[];
-    mode: CognitiveMode;
-  } | null>(null);
-  // The server asked "which did you mean" before answering, with tappable
-  // options - same shape as pendingRefined, since this is also a single
-  // exchange rather than a multi-round one.
-  const [pendingClarifyingOptions, setPendingClarifyingOptions] = useState<{
-    suggestion: ClarifyingOptionsSuggestion;
-    content: string;
-    attachments: PendingAttachment[];
-    mode: CognitiveMode;
-  } | null>(null);
+  // The question the server stopped to ask before answering, if any.
+  const [pendingGate, setPendingGate] = useState<PendingGate | null>(null);
+  const contextGate = pendingGate?.kind === "context" ? pendingGate : null;
+  const refinedGate = pendingGate?.kind === "refined" ? pendingGate : null;
+  const optionsGate = pendingGate?.kind === "options" ? pendingGate : null;
   const audioRef = useRef<AudioPlayer | null>(null);
   // Lets the stop button cut the current request off mid-stream. Recreated
   // per send rather than reused, since an aborted controller can't un-abort.
@@ -329,8 +356,8 @@ export function ChatView({ conversationId }: { conversationId: string }) {
     let cancelled = false;
 
     Promise.all([
-      apiFetch<Conversation>(`/chat/conversations/${conversationId}`),
-      apiFetch<ChatMessage[]>(`/chat/${conversationId}/messages`),
+      apiFetch<Conversation>(`/chat/conversations/${encodeURIComponent(conversationId)}`),
+      apiFetch<ChatMessage[]>(`/chat/${encodeURIComponent(conversationId)}/messages`),
     ])
       .then(([conv, msgs]) => {
         if (cancelled) return;
@@ -434,46 +461,19 @@ export function ChatView({ conversationId }: { conversationId: string }) {
     }
   }
 
-  async function handleSend(
-    content: string,
-    attachments: PendingAttachment[],
-    // Regenerating re-sends in the mode the original turn used. `mode` state
-    // may not have caught up yet - setMode in the same tick doesn't apply
-    // until the next render - so the caller passes it explicitly.
-    modeOverride?: CognitiveMode,
-    // The user has answered the mode question, either way. Stops the server
-    // asking again about a question it already asked about.
-    modeConfirmed = false,
-    // Set once the user explicitly skips the pre-answer "why" ("Answer
-    // without this") - a hard stop, regardless of how many rounds have run.
-    contextAcknowledged = false,
-    // How many context-gate rounds have already been answered for this turn.
-    // The server caps further asking at MAX_CONTEXT_ROUNDS.
-    contextRounds = 0,
-    // Forking overrides, used only by handleRegenerate/handleSubmitEdit below
-    // - a normal send from the composer passes neither. `regenerateOf` skips
-    // creating a new user message entirely (the server attaches the new
-    // answer as a sibling of the existing one); `parentId` attaches a new
-    // user message as a sibling of some earlier one, rather than continuing
-    // from wherever the conversation currently is.
-    fork?: { parentId?: string | null; regenerateOf?: string },
-    // The user has answered the refined-phrasing suggestion, either way -
-    // asking it as worded or keeping their own. Appended as a final param
-    // (rather than inserted earlier) so every existing call site above stays
-    // valid unchanged; regenerate is the one caller that needs to pass true
-    // explicitly, since re-answering an already-settled question must never
-    // interrupt with this suggestion again.
-    refinedConfirmed = false,
-    // Same reasoning, for the clarifying-options gate: appended last so
-    // nothing above needs updating, defaulting to re-eligible except for
-    // regenerate.
-    clarifyingConfirmed = false,
-  ) {
-    const sendMode = modeOverride ?? mode;
+  async function handleSend(content: string, attachments: PendingAttachment[], options: SendOptions = {}) {
+    const {
+      modeConfirmed = false,
+      contextAcknowledged = false,
+      contextRounds = 0,
+      refinedConfirmed = false,
+      clarifyingConfirmed = false,
+      fork,
+    } = options;
+    const flags: GateFlags = { contextAcknowledged, contextRounds, refinedConfirmed, clarifyingConfirmed };
+    const sendMode = options.mode ?? mode;
     if (!sendMode) return;
-    setPendingContext(null);
-    setPendingRefined(null);
-    setPendingClarifyingOptions(null);
+    setPendingGate(null);
 
     setError(null);
     setSending(true);
@@ -530,6 +530,16 @@ export function ChatView({ conversationId }: { conversationId: string }) {
       smart_switching: smartSwitching,
       follow_up: messages.length > 0,
     });
+
+    /** A gate stopped this send before anything was written server-side, so
+     *  the optimistic user message is rolled back too - it is re-sent for
+     *  real once they choose. (Regenerating writes no user row, so there is
+     *  nothing to roll back in that case.) */
+    function heldAtGate() {
+      if (userMessage) setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
+      setStreaming(null);
+      setSending(false);
+    }
 
     await streamChatMessage(
       conversationId,
@@ -692,14 +702,7 @@ export function ChatView({ conversationId }: { conversationId: string }) {
         },
         onModeSuggestion: (suggestion) => {
           track("gate_shown", { kind: "mode", mode: sendMode, suggested: suggestion.suggested_mode });
-          // Nothing was written server-side, so the optimistic user message is
-          // rolled back too - it will be re-sent for real once they choose.
-          // (Regenerating never reaches this - the server skips the mode
-          // gate entirely for it - so there's no optimistic message to roll
-          // back in that case.)
-          if (userMessage) setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
-          setStreaming(null);
-          setSending(false);
+          heldAtGate();
           const next = suggestion.suggested_mode as PickableMode;
           if (lockedModesRef.current.includes(next)) {
             // Outside what can be started today: show the plans, and answer
@@ -707,64 +710,41 @@ export function ChatView({ conversationId }: { conversationId: string }) {
             // choosing simply leaves them where they were.
             track("locked_mode_tapped", { mode: next, via: "smart_switch" });
             setUpsell(MODE_BY_VALUE[next]?.label ?? next);
-            void handleSend(
-              content, attachments, sendMode, true, contextAcknowledged, contextRounds,
-              undefined, refinedConfirmed, clarifyingConfirmed,
-            );
+            void handleSend(content, attachments, { ...flags, mode: sendMode, modeConfirmed: true });
             return;
           }
           // Automatic: switch, say so, and answer. The banner under the mode
           // strip carries "answer in <old mode> instead" for as long as the
           // answer is being written.
           setMode(next);
-          const flags = { contextAcknowledged, contextRounds, refinedConfirmed, clarifyingConfirmed };
           track("mode_switched_automatically", { from: sendMode, to: next });
           setSwitchedFrom({ from: sendMode, to: next, content, attachments, flags });
           setSwitchToast(true);
-          void handleSend(
-            content, attachments, next, true, contextAcknowledged, contextRounds,
-            undefined, refinedConfirmed, clarifyingConfirmed,
-          );
+          void handleSend(content, attachments, { ...flags, mode: next, modeConfirmed: true });
         },
         onContextQuestion: (asked) => {
           track("gate_shown", { kind: "context", mode: sendMode });
-          // Nothing was written server-side, so the optimistic user message is
-          // rolled back the same way the mode gate rolls it back. `content`
-          // here is already the accumulated text (original message plus any
-          // earlier rounds) since it's what this call was sent with.
-          if (userMessage) setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
-          setPendingContext({
+          heldAtGate();
+          // `content` here is already the accumulated text (original message
+          // plus any earlier rounds) since it's what this call was sent with.
+          setPendingGate({
+            kind: "context",
             question: asked.question,
             content,
             attachments,
             mode: sendMode,
             rounds: contextRounds,
           });
-          setStreaming(null);
-          setSending(false);
         },
         onRefinedQuestion: (suggestion) => {
           track("gate_shown", { kind: "refined", mode: sendMode });
-          // Nothing was written server-side, so the optimistic user message is
-          // rolled back the same way the other two gates roll it back.
-          // (Regenerating never reaches this - it sends refinedConfirmed=true
-          // - so there's no optimistic message to roll back in that case.)
-          if (userMessage) setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
-          setPendingRefined({ suggestion, content, attachments, mode: sendMode });
-          setStreaming(null);
-          setSending(false);
+          heldAtGate();
+          setPendingGate({ kind: "refined", suggestion, content, attachments, mode: sendMode });
         },
         onClarifyingOptions: (suggestion) => {
           track("gate_shown", { kind: "options", mode: sendMode });
-          // Nothing was written server-side, so the optimistic user message is
-          // rolled back the same way the other gates roll it back.
-          // (Regenerating never reaches this - it sends
-          // clarifyingConfirmed=true - so there's no optimistic message to
-          // roll back in that case.)
-          if (userMessage) setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
-          setPendingClarifyingOptions({ suggestion, content, attachments, mode: sendMode });
-          setStreaming(null);
-          setSending(false);
+          heldAtGate();
+          setPendingGate({ kind: "options", suggestion, content, attachments, mode: sendMode });
         },
         onError: (detail, status) => {
           // Healthcare refused before reading anything: not a failure, a
@@ -827,7 +807,7 @@ export function ChatView({ conversationId }: { conversationId: string }) {
     if (!last) return;
     track("quick_answer_tapped", { mode: last.mode });
     handleStop();
-    void handleSend(last.content, last.attachments, "rapid", true);
+    void handleSend(last.content, last.attachments, { mode: "rapid", modeConfirmed: true });
   }
 
   /** The stream died before it finished. The answer may well exist anyway:
@@ -848,7 +828,7 @@ export function ChatView({ conversationId }: { conversationId: string }) {
       // Read immediately after the server has written an answer, so it must
       // not come from the cache in lib/apiClient.
       const fresh = await apiFetch<ChatMessage[]>(
-        `/chat/${conversationId}/messages`,
+        `/chat/${encodeURIComponent(conversationId)}/messages`,
         { fresh: true },
       );
       const answered =
@@ -915,7 +895,7 @@ export function ChatView({ conversationId }: { conversationId: string }) {
     if (!turns.length || !mode) return;
     try {
       const saved = await apiFetch<ChatMessage[]>(
-        `/chat/${conversationId}/call-transcript`,
+        `/chat/${encodeURIComponent(conversationId)}/call-transcript`,
         { method: "POST", body: { mode, turns } },
       );
       setMessages((prev) => [...prev, ...saved]);
@@ -940,17 +920,16 @@ export function ChatView({ conversationId }: { conversationId: string }) {
     setError(null);
     setMessages((prev) => prev.slice(0, index));
     try {
-      await handleSend(
-        "",
-        [],
-        target.mode_used as CognitiveMode,
-        true,
-        true,
-        0,
-        { regenerateOf: target.id },
-        true,
-        true,
-      );
+      // Every gate settled: re-answering an already-settled question must
+      // never interrupt with one again.
+      await handleSend("", [], {
+        mode: target.mode_used as CognitiveMode,
+        modeConfirmed: true,
+        contextAcknowledged: true,
+        refinedConfirmed: true,
+        clarifyingConfirmed: true,
+        fork: { regenerateOf: target.id },
+      });
       // The streamed-in message carries no sibling count of its own - only
       // list_messages computes that, by looking at every row sharing its
       // parent. A reload is what turns "there are now two answers" into the
@@ -980,9 +959,7 @@ export function ChatView({ conversationId }: { conversationId: string }) {
     setMessages((prev) => prev.slice(0, index));
     setMode(modeUsed);
     try {
-      await handleSend(content, [], modeUsed, false, false, 0, {
-        parentId: target.parent_id,
-      });
+      await handleSend(content, [], { mode: modeUsed, fork: { parentId: target.parent_id } });
       // Same reason as handleRegenerate: the streamed-in messages don't know
       // their own sibling count until something re-reads the tree.
       await reloadMessages();
@@ -1002,7 +979,7 @@ export function ChatView({ conversationId }: { conversationId: string }) {
     setError(null);
     try {
       await apiFetch<{ active_leaf_id: string }>(
-        `/chat/${conversationId}/active-leaf`,
+        `/chat/${encodeURIComponent(conversationId)}/active-leaf`,
         { method: "PUT", body: { message_id: messageId } },
       );
       await reloadMessages();
@@ -1019,7 +996,7 @@ export function ChatView({ conversationId }: { conversationId: string }) {
   async function handleDeleteMessage(messageId: string) {
     setError(null);
     try {
-      await apiFetch(`/chat/${conversationId}/messages/${messageId}`, { method: "DELETE" });
+      await apiFetch(`/chat/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`, { method: "DELETE" });
       await reloadMessages();
     } catch (err) {
       setError(authErrorMessage(err));
@@ -1032,7 +1009,7 @@ export function ChatView({ conversationId }: { conversationId: string }) {
       // or a branch switch, which is exactly when a moment-old answer is the
       // wrong one.
       setMessages(
-        await apiFetch<ChatMessage[]>(`/chat/${conversationId}/messages`, { fresh: true }),
+        await apiFetch<ChatMessage[]>(`/chat/${encodeURIComponent(conversationId)}/messages`, { fresh: true }),
       );
     } catch {
       // The error from the failed action is already on screen; a second one
@@ -1184,7 +1161,7 @@ export function ChatView({ conversationId }: { conversationId: string }) {
     />
   );
 
-  const gateOpen = Boolean(pendingContext || pendingRefined || pendingClarifyingOptions);
+  const gateOpen = pendingGate !== null;
   const showGates = gateOpen || (healthBlocked && healthConsent !== null) || healthNeedsTemporary;
   // Below the web's sm breakpoint the companion floats over the end of the
   // thread instead of taking a row of its own.
@@ -1344,57 +1321,50 @@ export function ChatView({ conversationId }: { conversationId: string }) {
                   </Pressable>
                 </View>
               )}
-              {pendingContext && (
+              {contextGate && (
                 <ContextQuestionCard
                   // A new round is a new question with its own fresh text box,
                   // not an update to the same one - without a key tied to the
                   // round, the card's own internal draft state would carry
                   // over from the previous round's box.
-                  key={pendingContext.rounds}
-                  question={pendingContext.question}
+                  key={contextGate.rounds}
+                  question={contextGate.question}
                   busy={sending}
                   onAnswer={(context) =>
                     // Their answer joins the original message rather than
                     // replacing it, so the transcript keeps both halves of what
                     // they said and the model sees the whole thing as one turn.
                     // The question itself is folded in too - the card asking it
-                    // unmounts the instant this fires (pendingContext is
-                    // cleared at the top of handleSend), so if the question
-                    // isn't in the message text itself it vanishes from the
-                    // transcript entirely, both on screen and in what gets
-                    // saved.
-                    // Not context_acknowledged=true here: answering a round
-                    // asks to be evaluated again (the gate may have one more
-                    // genuine question), not to be waved through. contextRounds
-                    // is what caps that, on the server.
+                    // unmounts the instant this fires (pendingGate is cleared
+                    // at the top of handleSend), so if the question isn't in
+                    // the message text itself it vanishes from the transcript
+                    // entirely, both on screen and in what gets saved.
+                    // Not contextAcknowledged here: answering a round asks to
+                    // be evaluated again (the gate may have one more genuine
+                    // question), not to be waved through. contextRounds is
+                    // what caps that, on the server.
                     void handleSend(
-                      `${pendingContext.content}\n\n(Clardentity asked: "${pendingContext.question}")\n${context}`,
-                      pendingContext.attachments,
-                      pendingContext.mode,
-                      false,
-                      false,
-                      pendingContext.rounds + 1,
+                      `${contextGate.content}\n\n(Clardentity asked: "${contextGate.question}")\n${context}`,
+                      contextGate.attachments,
+                      { mode: contextGate.mode, contextRounds: contextGate.rounds + 1 },
                     )
                   }
                   onSkip={() =>
                     // A hard stop regardless of round count - the only way to
                     // cut the gate off before it decides to stop on its own.
-                    void handleSend(
-                      pendingContext.content,
-                      pendingContext.attachments,
-                      pendingContext.mode,
-                      false,
-                      true,
-                      pendingContext.rounds,
-                    )
+                    void handleSend(contextGate.content, contextGate.attachments, {
+                      mode: contextGate.mode,
+                      contextAcknowledged: true,
+                      contextRounds: contextGate.rounds,
+                    })
                   }
                 />
               )}
 
-              {pendingRefined && (
+              {refinedGate && (
                 <RefinedQuestionCard
-                  refinedQuestion={pendingRefined.suggestion.refined_question}
-                  reason={pendingRefined.suggestion.refinement_reason}
+                  refinedQuestion={refinedGate.suggestion.refined_question}
+                  reason={refinedGate.suggestion.refinement_reason}
                   busy={sending}
                   onAskRefined={() =>
                     // Same "(Clardentity asked: ...)" embedding the context
@@ -1404,35 +1374,24 @@ export function ChatView({ conversationId }: { conversationId: string }) {
                     // from what they typed, and the reason why should stay
                     // visible.
                     void handleSend(
-                      `${pendingRefined.content}\n\n(Clardentity asked: "Did you mean: ${pendingRefined.suggestion.refined_question}")\n${pendingRefined.suggestion.refined_question}`,
-                      pendingRefined.attachments,
-                      pendingRefined.mode,
-                      false,
-                      false,
-                      0,
-                      undefined,
-                      true,
+                      `${refinedGate.content}\n\n(Clardentity asked: "Did you mean: ${refinedGate.suggestion.refined_question}")\n${refinedGate.suggestion.refined_question}`,
+                      refinedGate.attachments,
+                      { mode: refinedGate.mode, refinedConfirmed: true },
                     )
                   }
                   onKeepOriginal={() =>
-                    void handleSend(
-                      pendingRefined.content,
-                      pendingRefined.attachments,
-                      pendingRefined.mode,
-                      false,
-                      false,
-                      0,
-                      undefined,
-                      true,
-                    )
+                    void handleSend(refinedGate.content, refinedGate.attachments, {
+                      mode: refinedGate.mode,
+                      refinedConfirmed: true,
+                    })
                   }
                 />
               )}
 
-              {pendingClarifyingOptions && (
+              {optionsGate && (
                 <ClarifyingOptionsCard
-                  question={pendingClarifyingOptions.suggestion.question}
-                  options={pendingClarifyingOptions.suggestion.options}
+                  question={optionsGate.suggestion.question}
+                  options={optionsGate.suggestion.options}
                   busy={sending}
                   onAnswer={(answer) =>
                     // Same "(Clardentity asked: ...)" embedding the other gates
@@ -1440,29 +1399,16 @@ export function ChatView({ conversationId }: { conversationId: string }) {
                     // transcript as a real exchange rather than the next
                     // message silently answering a question that isn't there.
                     void handleSend(
-                      `${pendingClarifyingOptions.content}\n\n(Clardentity asked: "${pendingClarifyingOptions.suggestion.question}")\n${answer}`,
-                      pendingClarifyingOptions.attachments,
-                      pendingClarifyingOptions.mode,
-                      false,
-                      false,
-                      0,
-                      undefined,
-                      false,
-                      true,
+                      `${optionsGate.content}\n\n(Clardentity asked: "${optionsGate.suggestion.question}")\n${answer}`,
+                      optionsGate.attachments,
+                      { mode: optionsGate.mode, clarifyingConfirmed: true },
                     )
                   }
                   onSkip={() =>
-                    void handleSend(
-                      pendingClarifyingOptions.content,
-                      pendingClarifyingOptions.attachments,
-                      pendingClarifyingOptions.mode,
-                      false,
-                      false,
-                      0,
-                      undefined,
-                      false,
-                      true,
-                    )
+                    void handleSend(optionsGate.content, optionsGate.attachments, {
+                      mode: optionsGate.mode,
+                      clarifyingConfirmed: true,
+                    })
                   }
                 />
               )}
@@ -1486,10 +1432,7 @@ export function ChatView({ conversationId }: { conversationId: string }) {
                 setSwitchToast(false);
                 setSwitchedFrom(null);
                 setMode(from);
-                void handleSend(
-                  content, attachments, from, true, flags.contextAcknowledged, flags.contextRounds,
-                  undefined, flags.refinedConfirmed, flags.clarifyingConfirmed,
-                );
+                void handleSend(content, attachments, { ...flags, mode: from, modeConfirmed: true });
               }}
             />
           </View>
@@ -1602,10 +1545,7 @@ export function ChatView({ conversationId }: { conversationId: string }) {
                     const { from, content, attachments, flags } = switchedFrom;
                     track("mode_switch_reverted", { to: from, via: "banner" });
                     setSwitchedFrom(null);
-                    void handleSend(
-                      content, attachments, from, true, flags.contextAcknowledged, flags.contextRounds,
-                      undefined, flags.refinedConfirmed, flags.clarifyingConfirmed,
-                    );
+                    void handleSend(content, attachments, { ...flags, mode: from, modeConfirmed: true });
                   }}
                 >
                   <Text style={s.bannerLink}>
