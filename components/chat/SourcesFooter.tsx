@@ -1,8 +1,8 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, { Circle, Path } from "react-native-svg";
-import * as WebBrowser from "expo-web-browser";
 import type { Claim } from "@/lib/sse";
 import { fonts, fontSize, px, radius, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
+import { safeOpenUrl } from "@/lib/links";
 
 /* The sources an answer rests on, gathered at its foot as cards - one per
  * document or page, however many claims cite it - so what the inline
@@ -105,7 +105,7 @@ export function SourcesFooter({ claims }: { claims: Claim[] }) {
           return src.url ? (
             <Pressable
               key={src.key}
-              onPress={() => void WebBrowser.openBrowserAsync(src.url!)}
+              onPress={() => safeOpenUrl(src.url)}
               accessibilityRole="link"
               style={({ pressed }) => [s.card, pressed && { borderColor: c.brandBorder, backgroundColor: c.brandSoft }]}
             >

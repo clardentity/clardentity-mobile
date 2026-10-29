@@ -2,9 +2,9 @@ import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import Animated, { FadeIn } from "react-native-reanimated";
 import Svg, { Path } from "react-native-svg";
-import * as WebBrowser from "expo-web-browser";
 import type { HealthConsentCopy, HealthConsentState } from "@/lib/sse";
 import { fonts, fontSize, px, radius, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
+import { safeOpenUrl } from "@/lib/links";
 
 /* Healthcare asks before it answers.
  *
@@ -124,7 +124,7 @@ export function HealthConsentCard({
               {i > 0 && (i === state.laws.length - 1 ? (AND[language] ?? " and ") : ", ")}
               {law.url ? (
                 <Text
-                  onPress={() => void WebBrowser.openBrowserAsync(law.url)}
+                  onPress={() => safeOpenUrl(law.url)}
                   accessibilityRole="link"
                   style={{ textDecorationLine: "underline" }}
                 >

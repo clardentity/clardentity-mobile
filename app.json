@@ -11,6 +11,8 @@
     "ios": {
       "bundleIdentifier": "ai.clardentity.app",
       "supportsTablet": true,
+      "usesAppleSignIn": true,
+      "associatedDomains": ["applinks:clardentity.ai"],
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Clardentity uses the microphone for voice notes, dictation and live calls with your companion.",
         "NSCameraUsageDescription": "Clardentity uses the camera so you can attach a photo to a question.",
@@ -19,6 +21,7 @@
     },
     "android": {
       "package": "ai.clardentity.app",
+      "allowBackup": false,
       "adaptiveIcon": {
         "backgroundColor": "#6b2d5c",
         "foregroundImage": "./assets/brand/icon-maskable-512.png"
@@ -28,6 +31,19 @@
         "android.permission.CAMERA"
       ],
       "softwareKeyboardLayoutMode": "resize",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            { "scheme": "https", "host": "clardentity.ai", "pathPrefix": "/reset-password" },
+            { "scheme": "https", "host": "clardentity.ai", "pathPrefix": "/start" },
+            { "scheme": "https", "host": "clardentity.ai", "pathPrefix": "/chat/" },
+            { "scheme": "https", "host": "clardentity.ai", "pathPrefix": "/workspace/" }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ],
       "predictiveBackGestureEnabled": false
     },
     "web": {
@@ -69,7 +85,8 @@
       ],
       "expo-status-bar",
       "@config-plugins/react-native-webrtc",
-      "expo-asset"
+      "expo-asset",
+      "expo-apple-authentication"
     ],
     "experiments": {
       "typedRoutes": false

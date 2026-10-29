@@ -38,7 +38,7 @@ export type PendingAttachment = {
 };
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
+export const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
 /** How many files one message can carry. */
 const MAX_ATTACHMENTS = 10;
 /** Mirrors SUPPORTED_TYPES / LEGACY_TYPES in the backend's document_ingestion. */

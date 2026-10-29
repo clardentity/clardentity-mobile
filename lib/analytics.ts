@@ -176,11 +176,18 @@ export function routePattern(value: string): string {
  *  counts per mode, stay in our own database (the admin overview). */
 const SENSITIVE_MODES = new Set(["guidance", "healthcare"]);
 const MODE_KEYS = /^(mode|from|to|suggested)$/;
+/** The same rule for consent: "agreed to health-data processing" says the
+ *  person is seeking health help just as plainly as the mode name does. */
+const SENSITIVE_CHOICE = /^health/;
 
 export function sanitize(properties: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(properties)) {
     if (typeof value === "string" && MODE_KEYS.test(key) && SENSITIVE_MODES.has(value)) {
+      out[key] = "sensitive";
+      continue;
+    }
+    if (typeof value === "string" && key === "choice" && SENSITIVE_CHOICE.test(value)) {
       out[key] = "sensitive";
       continue;
     }

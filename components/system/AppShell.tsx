@@ -145,7 +145,7 @@ function RecentConversations({
   useEffect(() => {
     if (!workspaceId) return;
     let cancelled = false;
-    apiFetch<RecentConversation[]>(`/chat/conversations?workspace_id=${workspaceId}`)
+    apiFetch<RecentConversation[]>(`/chat/conversations?workspace_id=${encodeURIComponent(workspaceId)}`)
       .then((rows) => {
         if (cancelled) return;
         setTotal(rows.length);
@@ -440,7 +440,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     if (!conversationId) return;
     let cancelled = false;
     apiFetch<{ workspace_id: string; title: string | null; temporary?: boolean }>(
-      `/chat/conversations/${conversationId}`,
+      `/chat/conversations/${encodeURIComponent(conversationId)}`,
     )
       .then((conv) => {
         if (!cancelled) {

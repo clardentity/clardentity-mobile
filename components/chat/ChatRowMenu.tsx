@@ -112,7 +112,7 @@ export function ChatRowMenu({
     setBusy(true);
     setError(null);
     try {
-      await apiFetch(`/chat/conversations/${conversationId}`, { method: "PATCH", body });
+      await apiFetch(`/chat/conversations/${encodeURIComponent(conversationId)}`, { method: "PATCH", body });
       if ("title" in body) track("chat_renamed");
       if ("pinned" in body) track("chat_pinned", { pinned: Boolean(body.pinned) });
       if ("workspace_id" in body) track("chat_moved");
@@ -129,7 +129,7 @@ export function ChatRowMenu({
     setBusy(true);
     setError(null);
     try {
-      await apiFetch(`/chat/conversations/${conversationId}`, { method: "DELETE" });
+      await apiFetch(`/chat/conversations/${encodeURIComponent(conversationId)}`, { method: "DELETE" });
       track("chat_deleted");
       setOpenState(false);
       onDeleted?.();

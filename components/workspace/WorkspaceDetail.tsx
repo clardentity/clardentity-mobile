@@ -58,8 +58,8 @@ export function WorkspaceDetail({ workspaceId }: { workspaceId: string }) {
     let cancelled = false;
 
     Promise.all([
-      apiFetch<Workspace>(`/workspaces/${workspaceId}`),
-      apiFetch<Conversation[]>(`/chat/conversations?workspace_id=${workspaceId}`),
+      apiFetch<Workspace>(`/workspaces/${encodeURIComponent(workspaceId)}`),
+      apiFetch<Conversation[]>(`/chat/conversations?workspace_id=${encodeURIComponent(workspaceId)}`),
       apiFetch<Workspace[]>("/workspaces").catch(() => [] as Workspace[]),
     ])
       .then(([ws, convs, all]) => {
@@ -114,7 +114,7 @@ export function WorkspaceDetail({ workspaceId }: { workspaceId: string }) {
     setDeletingWorkspace(true);
     setError(null);
     try {
-      await apiFetch(`/workspaces/${workspaceId}`, { method: "DELETE" });
+      await apiFetch(`/workspaces/${encodeURIComponent(workspaceId)}`, { method: "DELETE" });
       // The list page re-provisions a workspace on sign-in if this was the
       // last one, so there is always somewhere to land.
       router.replace("/workspace");

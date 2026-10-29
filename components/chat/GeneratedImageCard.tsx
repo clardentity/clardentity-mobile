@@ -37,7 +37,7 @@ function useImageSource(image: GeneratedImage) {
   // native image request can, so it is sent too.
   // WebP, because the PNG the model returns is 2.4MB and spent several
   // seconds as a blank square - long enough to read as no image at all.
-  const uri = `${API_BASE_URL}/images/${image.owner}/${image.id}.webp`;
+  const uri = `${API_BASE_URL}/images/${encodeURIComponent(image.owner)}/${encodeURIComponent(image.id)}.webp`;
   const token = getAccessToken();
   return useMemo(() => ({ uri, headers: token ? { Authorization: `Bearer ${token}` } : undefined }), [uri, token]);
 }

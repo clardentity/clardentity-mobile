@@ -1,0 +1,10 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "ai.clardentity.app",
+      "sha256_cert_fingerprints": ["SHA256:FROM:PLAY:APP:SIGNING"]
+    }
+  }
+]
