@@ -83,7 +83,7 @@ export function useCounterfactual({
     setError(null);
     try {
       const res = await apiFetch<{ counterfactual_content: string }>(
-        `/chat/${conversationId}/messages/${messageId}/devils-advocate`,
+        `/chat/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/devils-advocate`,
         { method: "POST" },
       );
       setText(res.counterfactual_content);

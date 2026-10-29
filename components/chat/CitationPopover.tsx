@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
-import * as WebBrowser from "expo-web-browser";
 import type { Evidence } from "@/lib/sse";
 import { fonts, fontSize, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
 import { PopoverSheet } from "@/components/chat/PopoverSheet";
+import { safeOpenUrl } from "@/lib/links";
 
 /* Wording ported from the deleted EvidencePanel so a score reads the same
    way wherever it appears - the citation popover is now the only place any
@@ -179,7 +179,7 @@ export function CitationPopover({
       <PopoverSheet open={open} onClose={() => setOpen(false)} label={`Source: ${evidence.document_filename}`}>
         {isWeb ? (
           <Pressable
-            onPress={() => void WebBrowser.openBrowserAsync(evidence.url!)}
+            onPress={() => safeOpenUrl(evidence.url)}
             accessibilityRole="link"
             style={s.linkRow}
           >

@@ -15,7 +15,7 @@ export function WorkspaceSearch({ workspaceId }: { workspaceId: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    apiFetch<Workspace>(`/workspaces/${workspaceId}`)
+    apiFetch<Workspace>(`/workspaces/${encodeURIComponent(workspaceId)}`)
       .then((w) => {
         if (!cancelled) setWorkspace(w);
       })

@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { fetch } from "expo/fetch";
-import { File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
-import { API_BASE_URL } from "@/lib/apiClient";
+import { API_BASE_URL, serverDetail } from "@/lib/apiClient";
 import { getAccessToken, refreshAccessToken } from "@/lib/auth";
+import { deleteQuietly, exportFile, safeFileName } from "@/lib/exportFiles";
 import { Spinner } from "@/components/ui/primitives";
 import { fonts, fontSize, radius, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
 
@@ -48,7 +48,7 @@ export function ExportFileMenu({
   const s = useThemedStyles(styles);
 
   async function request(format: string, accessToken: string | null) {
-    return fetch(`${API_BASE_URL}/chat/${conversationId}/messages/${messageId}/export-file`, {
+    return fetch(`${API_BASE_URL}/chat/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/export-file`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -70,22 +70,26 @@ export function ExportFileMenu({
         if (fresh) res = await request(format, fresh);
       }
       if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { detail?: string } | null;
-        throw new Error(body?.detail ?? "Couldn't generate the file");
+        const body = await res.json().catch(() => null);
+        throw new Error(serverDetail(body, res.status, "Couldn't generate the file"));
       }
       const bytes = new Uint8Array(await res.arrayBuffer());
       const disposition = res.headers.get("Content-Disposition") ?? "";
-      const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? `document.${format}`;
+      const filename = safeFileName(disposition.match(/filename="([^"]+)"/)?.[1], `document.${format}`);
 
       // The web clicked an off-DOM download link. A phone has no downloads
       // folder to drop it in, so the file is written to the cache and handed
       // to the share sheet, from which it can be saved to Files, opened in
-      // Word, or sent on.
-      const file = new File(Paths.cache, filename.replace(/[/\\]/g, "_"));
+      // Word, or sent on - and deleted once the sheet is done with it.
+      const file = exportFile(filename);
       file.create({ overwrite: true });
-      await file.write(bytes);
-      if (!(await Sharing.isAvailableAsync())) throw new Error("Sharing isn't available on this device");
-      await Sharing.shareAsync(file.uri, { mimeType: MIME[format], UTI: UTI[format], dialogTitle: filename });
+      try {
+        await file.write(bytes);
+        if (!(await Sharing.isAvailableAsync())) throw new Error("Sharing isn't available on this device");
+        await Sharing.shareAsync(file.uri, { mimeType: MIME[format], UTI: UTI[format], dialogTitle: filename });
+      } finally {
+        deleteQuietly(file);
+      }
       setOpen(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't generate the file");

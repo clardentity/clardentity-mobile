@@ -445,7 +445,7 @@ export function AdminDashboard() {
   const [pinning, setPinning] = useState(false);
 
   const runView = useCallback((view: PinnedView) => {
-    apiFetch<QueryResult>(`/admin/views/${view.id}/result`)
+    apiFetch<QueryResult>(`/admin/views/${encodeURIComponent(view.id)}/result`)
       .then((r) => setViewResults((prev) => ({ ...prev, [view.id]: r })))
       .catch((err) =>
         setViewResults((prev) => ({
@@ -519,7 +519,7 @@ export function AdminDashboard() {
 
   async function unpin(view: PinnedView) {
     try {
-      await apiFetch(`/admin/views/${view.id}`, { method: "DELETE" });
+      await apiFetch(`/admin/views/${encodeURIComponent(view.id)}`, { method: "DELETE" });
       setViews((prev) => prev.filter((v) => v.id !== view.id));
     } catch {
       // Left on screen; the next refresh shows the truth.

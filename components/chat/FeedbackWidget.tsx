@@ -41,7 +41,7 @@ export function FeedbackWidget({
   async function save(next: { rating: "up" | "down" | null; comment: string | null }) {
     setSaving(true);
     try {
-      await apiFetch(`/chat/${conversationId}/messages/${messageId}/feedback`, {
+      await apiFetch(`/chat/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/feedback`, {
         method: "PUT",
         body: next,
       });

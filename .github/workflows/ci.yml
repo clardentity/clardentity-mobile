@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npx eslint . --max-warnings 50
+
+      - name: Unit tests
+        run: npm test -- --ci
+
+      - name: Expo config resolves
+        run: npx expo config --type public > /dev/null
+
+      - name: Bundle iOS and Android
+        run: npx expo export --platform ios --platform android --output-dir dist
