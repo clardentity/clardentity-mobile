@@ -28,7 +28,6 @@ import { AppNotices } from "@/components/system/AppNotices";
 import { OfflineNotice } from "@/components/system/OfflineNotice";
 import { apiFetch } from "@/lib/apiClient";
 import { useAuth } from "@/lib/auth";
-import { ThemeToggle } from "@/components/system/ThemeToggle";
 import { ChatRowMenu } from "@/components/chat/ChatRowMenu";
 import { rememberWorkspace } from "@/lib/lastWorkspace";
 import { startTour, type TourId } from "@/lib/tour";
@@ -206,7 +205,6 @@ function RecentConversations({
                     (active || pressed) && { backgroundColor: c.surfaceHover },
                   ]}
                 >
-                  <MaskIcon src="/ui/recent-dot.svg" size={12} color={active ? c.ink : c.nav} />
                   <Text numberOfLines={1} style={[s.recentText, active && { fontFamily: fonts.medium, color: c.ink }]}>
                     {r.title || "Untitled chat"}
                   </Text>
@@ -271,7 +269,7 @@ function NavItem({
 }) {
   const c = useColors();
   const s = useThemedStyles(styles);
-  const color = active ? c.ink : c.nav;
+  const color = c.ink;
   return (
     <TourTarget id={tourId}>
       <Pressable
@@ -284,7 +282,7 @@ function NavItem({
         style={({ pressed }) => [s.navRow, (active || pressed) && { backgroundColor: c.surfaceHover }]}
       >
         {iconSrc ? (
-          <MaskIcon src={iconSrc} size={24} color={color} />
+          <MaskIcon src={iconSrc} size={20} color={color} />
         ) : (
           <Icon size={24} color={color}>
             {icon}
@@ -294,99 +292,6 @@ function NavItem({
           {children}
         </Text>
       </Pressable>
-    </TourTarget>
-  );
-}
-
-/* The list opens in place under the button, pushing the nav down, rather
- * than floating over it: a dropdown drawn outside its parent's bounds
- * doesn't receive touches on Android. */
-function WorkspaceSwitcher({
-  workspaces,
-  activeId,
-  onNavigate,
-}: {
-  workspaces: Workspace[];
-  activeId: string | null;
-  onNavigate?: () => void;
-}) {
-  const c = useColors();
-  const s = useThemedStyles(styles);
-  const [open, setOpen] = useState(false);
-  const active = workspaces.find((w) => w.id === activeId) ?? null;
-
-  function go(href: string) {
-    setOpen(false);
-    onNavigate?.();
-    router.push(href);
-  }
-
-  return (
-    <TourTarget id="workspace-switcher">
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        accessibilityLabel={`Workspace: ${active?.name ?? "none selected"}`}
-        onPress={() => setOpen((v) => !v)}
-        style={({ pressed }) => [s.switcher, pressed && { backgroundColor: c.surfaceHover }]}
-      >
-        <View style={s.switcherInitial}>
-          <Text style={{ fontFamily: fonts.semibold, fontSize: fontSize.xs, color: "#ffffff" }}>
-            {(active?.name ?? "W").slice(0, 1).toUpperCase()}
-          </Text>
-        </View>
-        <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, fontFamily: fonts.medium, fontSize: fontSize.sm, color: c.ink }}>
-          {active?.name ?? "Select a workspace"}
-        </Text>
-        <View style={{ transform: [{ rotate: open ? "180deg" : "0deg" }] }}>
-          <Icon size={px(14)} color={c.inkMuted}>
-            {icons.chevron}
-          </Icon>
-        </View>
-      </Pressable>
-
-      {open && (
-        <View accessibilityRole="menu" style={s.switcherMenu}>
-          <ScrollView style={{ maxHeight: px(288) }} nestedScrollEnabled>
-            {workspaces.length === 0 && (
-              <Text style={{ paddingHorizontal: space(2.5), paddingVertical: space(2), fontFamily: fonts.regular, fontSize: fontSize.xs, color: c.inkMuted }}>
-                No workspaces yet
-              </Text>
-            )}
-            {workspaces.map((w) => {
-              const current = w.id === activeId;
-              return (
-                <Pressable
-                  key={w.id}
-                  accessibilityRole="menuitem"
-                  accessibilityState={{ selected: current }}
-                  onPress={() => go(`/workspace/${w.id}`)}
-                  style={({ pressed }) => [
-                    s.switcherItem,
-                    { backgroundColor: current ? c.brandSoft : pressed ? c.surfaceHover : "transparent" },
-                  ]}
-                >
-                  <Text numberOfLines={1} style={{ flex: 1, fontFamily: fonts.regular, fontSize: fontSize.sm, color: current ? c.brand : c.inkSecondary }}>
-                    {w.name}
-                  </Text>
-                  <Text style={{ fontFamily: fonts.regular, fontSize: fontSize.xs, letterSpacing: 0.4, textTransform: "uppercase", color: c.inkMuted }}>
-                    {w.role}
-                  </Text>
-                </Pressable>
-              );
-            })}
-            <View style={{ marginVertical: space(1), height: StyleSheet.hairlineWidth, backgroundColor: c.hairline }} />
-            <Pressable
-              accessibilityRole="menuitem"
-              onPress={() => go("/workspace")}
-              style={({ pressed }) => [s.switcherItem, { justifyContent: "flex-start", gap: space(2) }, pressed && { backgroundColor: c.surfaceHover }]}
-            >
-              <Icon color={c.inkSecondary}>{icons.plus}</Icon>
-              <Text style={{ fontFamily: fonts.regular, fontSize: fontSize.sm, color: c.inkSecondary }}>All workspaces</Text>
-            </Pressable>
-          </ScrollView>
-        </View>
-      )}
     </TourTarget>
   );
 }
@@ -653,9 +558,22 @@ export function AppShell({ children }: { children: ReactNode }) {
      (start talking) is one tap at the top, and the thing you do second most
      (pick up where you left off) is a list you scan rather than a screen you
      navigate to. */
+  const searchHref = activeWorkspaceId ? `/workspace/${activeWorkspaceId}/search` : "/workspace";
   const nav = (
-    <View style={{ flex: 1, minHeight: 0, padding: space(3) }}>
-      <WorkspaceSwitcher workspaces={workspaces} activeId={activeWorkspaceId} onNavigate={close} />
+    <View style={{ flex: 1, minHeight: 0, paddingHorizontal: 16 }}>
+      {/* The mobile design's search field: a white pill that opens Search. */}
+      <Pressable
+        accessibilityRole="search"
+        accessibilityLabel="Search conversations"
+        onPress={() => {
+          close();
+          router.push(searchHref);
+        }}
+        style={({ pressed }) => [s.searchField, pressed && { opacity: 0.8 }]}
+      >
+        <MaskIcon src="/ui/m-search-small.svg" width={13} height={13} color={c.inkTertiary} />
+        <Text style={{ fontFamily: fonts.regular, fontSize: 16, color: c.inkTertiary }}>Search</Text>
+      </Pressable>
 
       <Pressable
         accessibilityRole="button"
@@ -666,35 +584,41 @@ export function AppShell({ children }: { children: ReactNode }) {
         disabled={starting}
         style={({ pressed }) => [
           s.navRow,
-          { marginTop: space(3), opacity: starting ? 0.5 : 1 },
+          { marginTop: 18, opacity: starting ? 0.5 : 1 },
           pressed && { backgroundColor: c.surfaceHover },
         ]}
       >
-        <MaskIcon src="/ui/nav-newchat.svg" size={24} color={c.nav} />
-        <Text style={[s.navText, { color: c.nav }]}>{starting ? "Starting…" : "New chat"}</Text>
+        <MaskIcon src="/ui/m-chat-centered.svg" size={24} color={c.brand} />
+        <Text style={[s.navText, { color: c.brand, fontFamily: fonts.medium }]}>{starting ? "Starting…" : "New chat"}</Text>
       </Pressable>
 
-      <View style={{ marginTop: space(0.5), gap: space(0.5) }}>
-        {/* Three rows, as drawn. Workspaces is reached from the picker above
-            rather than a row of its own, and Search replaces the old "Chats"
-            - same destination, the name the design gives it. */}
+      <View style={{ gap: 6 }}>
         <NavItem
-          href={activeWorkspaceId ? `/workspace/${activeWorkspaceId}/documents` : "/workspace"}
-          iconSrc="/ui/nav-attachments.svg"
-          active={pathname.endsWith("/documents")}
+          href={activeWorkspaceId ? `/workspace/${activeWorkspaceId}` : "/workspace"}
+          iconSrc="/ui/m-folder-open.svg"
+          active={pathname === "/workspace" || /^\/workspace\/[^/]+$/.test(pathname)}
           onNavigate={close}
-          tourId="nav-attachments"
+          tourId="workspace-switcher"
         >
-          Attachments
+          My workspace
         </NavItem>
         <NavItem
-          href={activeWorkspaceId ? `/workspace/${activeWorkspaceId}/search` : "/workspace"}
-          iconSrc="/ui/nav-search.svg"
+          href={searchHref}
+          iconSrc="/ui/m-nav-search.svg"
           active={pathname.endsWith("/search")}
           onNavigate={close}
           tourId="nav-chats"
         >
           Search
+        </NavItem>
+        <NavItem
+          href={activeWorkspaceId ? `/workspace/${activeWorkspaceId}/documents` : "/workspace"}
+          iconSrc="/ui/m-paperclip.svg"
+          active={pathname.endsWith("/documents")}
+          onNavigate={close}
+          tourId="nav-attachments"
+        >
+          Attachments
         </NavItem>
         {/* Only an administrator has anywhere to go here, and only the
             server knows who that is. Absent for everyone else rather than
@@ -745,7 +669,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           hitSlop={8}
           style={({ pressed }) => [s.iconButton, pressed && { backgroundColor: c.surfaceHover }]}
         >
-          <Icon color={c.inkSecondary}>{icons.menu}</Icon>
+          <Icon size={24} color={c.ink}>{icons.menu}</Icon>
         </Pressable>
         <Breadcrumbs
           pathname={pathname}
@@ -798,7 +722,6 @@ export function AppShell({ children }: { children: ReactNode }) {
             </Icon>
           </Pressable>
         )}
-        {!narrow && <ThemeToggle tourId="theme-toggle" />}
         {tourHere && !narrow && (
           // The coachmarks, again, on request - for anyone who skipped them
           // or wants a second look. Only where a tour exists for the screen
@@ -831,7 +754,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       {mobileOpen && (
         <View style={[StyleSheet.absoluteFill, { zIndex: 40 }]}>
-          <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(0,0,0,0.4)" }, scrimStyle]}>
+          <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: c.hairlineStrong }, scrimStyle]}>
             <Pressable
               style={StyleSheet.absoluteFill}
               accessibilityLabel="Close navigation"
@@ -847,7 +770,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               accessibilityLabel="Navigation"
               style={[s.drawer, { width: drawerWidth }, panelStyle]}
             >
-              <View style={[s.drawerHead, { paddingTop: insets.top, height: TOPBAR_HEIGHT + insets.top }]}>
+              <View style={[s.drawerHead, { paddingTop: insets.top + 24 }]}>
                 {/* Home, as the desktop sidebar's wordmark is. close(), not
                     dismiss(): this navigates. */}
                 <Pressable
@@ -857,14 +780,11 @@ export function AppShell({ children }: { children: ReactNode }) {
                     router.push("/");
                   }}
                   hitSlop={8}
-                  style={{ flexDirection: "row", alignItems: "center", gap: space(1.5) }}
                 >
-                  {/* the five-dot mark, as the desktop sidebar draws it */}
-                  <MaskIcon src="/ui/logo-dots.svg" width={px(18.6)} height={px(18)} color={c.brand} />
-                  <Text style={{ fontFamily: fonts.semibold, fontSize: fontSize.sm, letterSpacing: -0.2, color: c.ink }}>
-                    Clardentity
-                  </Text>
+                  <Text style={{ fontFamily: fonts.medium, fontSize: 23, color: c.ink }}>Clardentity</Text>
                 </Pressable>
+                {/* The scrim, a swipe and Back all close it too; this is the
+                    one a screen reader finds. */}
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel="Close navigation"
@@ -872,7 +792,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   hitSlop={8}
                   style={({ pressed }) => [s.iconButton, pressed && { backgroundColor: c.surfaceHover }]}
                 >
-                  <Icon color={c.inkMuted}>{icons.close}</Icon>
+                  <Icon color={c.inkTertiary}>{icons.close}</Icon>
                 </Pressable>
               </View>
               {nav}
@@ -925,8 +845,8 @@ function Breadcrumbs({
     // The chat screen has no title bar of its own, so this crumb is where
     // the conversation is named. Until the title has been generated from
     // the first exchange it reads the way the drawer does.
-    crumbs.push({ label: conversationTitle || "New chat" });
-    return <Crumbs crumbs={crumbs} />;
+    // The mobile design: the product's name, and under it which chat this is.
+    return <Crumbs crumbs={[{ label: "Clardentity" }]} subtitle={conversationTitle || "New chat"} />;
   }
 
   if (root === "workspace" && segments.length > 1) {
@@ -952,20 +872,26 @@ function Breadcrumbs({
   return <Crumbs crumbs={crumbs} />;
 }
 
-/** On a phone only the screen you are on: two crumbs shared the bar down
- *  to "P... / E..." on a 375pt screen. The workspace is still one tap away,
- *  in the drawer. 20px, in the warm grey the design gives the current page. */
-function Crumbs({ crumbs }: { crumbs: Array<{ label: string; href?: string }> }) {
+/** On a phone only the screen you are on: the mobile design's 20px title,
+ *  or on a chat the product name over a 12px line naming the chat. */
+function Crumbs({ crumbs, subtitle }: { crumbs: Array<{ label: string; href?: string }>; subtitle?: string }) {
   const c = useColors();
   const last = crumbs[crumbs.length - 1];
   return (
-    <Text
-      accessibilityRole="header"
-      numberOfLines={1}
-      style={{ flexShrink: 1, minWidth: 0, fontFamily: fonts.regular, fontSize: fontSize.xl, color: c.nav }}
-    >
-      {last?.label}
-    </Text>
+    <View style={{ flexShrink: 1, minWidth: 0, marginLeft: 4 }}>
+      <Text
+        accessibilityRole="header"
+        numberOfLines={1}
+        style={{ fontFamily: fonts.medium, fontSize: subtitle ? 19 : 20, color: c.ink }}
+      >
+        {last?.label}
+      </Text>
+      {subtitle ? (
+        <Text numberOfLines={1} style={{ marginTop: 2, fontFamily: fonts.regular, fontSize: 12, color: c.inkSecondary }}>
+          {subtitle}
+        </Text>
+      ) : null}
+    </View>
   );
 }
 
@@ -978,8 +904,9 @@ const styles = (c: Colors) =>
       gap: space(1),
       borderBottomWidth: 1,
       borderBottomColor: c.hairline,
-      backgroundColor: c.surface,
-      paddingHorizontal: space(4),
+      backgroundColor: c.canvas,
+      paddingLeft: 10,
+      paddingRight: space(2),
     },
     // The web's .tap-target: a 44pt box on touch screens, which also sets
     // how far apart the top bar's icons sit.
@@ -996,48 +923,55 @@ const styles = (c: Colors) =>
       top: 0,
       bottom: 0,
       left: 0,
-      borderRightWidth: 1,
-      borderRightColor: c.hairline,
-      backgroundColor: c.surfaceMuted,
+      backgroundColor: c.canvas,
     },
     drawerHead: {
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
-      borderBottomWidth: 1,
-      borderBottomColor: c.hairline,
-      paddingHorizontal: space(4),
+      paddingLeft: 22,
+      paddingRight: space(2),
+      paddingBottom: 14,
+    },
+    searchField: {
+      height: 49,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      borderRadius: 14,
+      backgroundColor: c.surface,
+      paddingHorizontal: 14,
     },
     account: { borderTopWidth: 1, borderTopColor: c.hairline, padding: space(3) },
     navRow: {
-      height: px(48),
+      height: 48,
       flexDirection: "row",
       alignItems: "center",
-      gap: space(3),
-      borderRadius: 9,
-      paddingHorizontal: space(4),
+      gap: 8,
+      borderRadius: 12,
+      paddingHorizontal: 6,
     },
-    navText: { flexShrink: 1, fontFamily: fonts.regular, fontSize: fontSize.sm, color: c.nav },
+    navText: { flexShrink: 1, fontFamily: fonts.regular, fontSize: 17, color: c.ink },
     recentsLabel: {
-      paddingHorizontal: space(4),
-      paddingBottom: space(1),
+      paddingHorizontal: 10,
+      paddingBottom: 6,
       fontFamily: fonts.medium,
-      fontSize: fontSize.sm,
+      fontSize: 12,
+      letterSpacing: 0.4,
       textTransform: "uppercase",
-      color: c.navMuted,
+      color: c.inkTertiary,
     },
     recentRow: {
-      height: 36,
+      height: 47,
       flex: 1,
       minWidth: 0,
       flexDirection: "row",
       alignItems: "center",
-      gap: space(5),
-      borderRadius: 9,
-      paddingLeft: space(4),
+      borderRadius: 12,
+      paddingLeft: 10,
       paddingRight: space(1.5),
     },
-    recentText: { flexShrink: 1, fontFamily: fonts.regular, fontSize: fontSize.sm, color: c.nav },
+    recentText: { flexShrink: 1, fontFamily: fonts.regular, fontSize: 15, color: c.inkSecondary },
     fade: { position: "absolute", left: 0, right: 0, height: space(6) },
     seeAll: { marginTop: space(1), borderRadius: radius.lg, paddingHorizontal: space(2.5), paddingVertical: space(1.5) },
     switcher: {

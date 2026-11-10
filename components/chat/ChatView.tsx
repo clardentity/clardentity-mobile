@@ -36,7 +36,8 @@ import {
 } from "@/lib/sse";
 import { ModeSelector, type CognitiveMode } from "@/components/chat/ModeSelector";
 import { forgetFreshChat, isFreshChat, markFreshChat } from "@/lib/freshChats";
-import { ChatGreeting, ModeDisclosure, TemporaryChatIntro } from "@/components/chat/ChatGreeting";
+import { ModeDisclosure, TemporaryChatIntro } from "@/components/chat/ChatGreeting";
+import { NewChatModes } from "@/components/chat/NewChatModes";
 import { MessageList, type StreamingMessage } from "@/components/chat/MessageList";
 import { ModeCarousel, groupByMode } from "@/components/chat/ModeCarousel";
 import { MessageInput, type PendingAttachment } from "@/components/chat/MessageInput";
@@ -1145,12 +1146,14 @@ export function ChatView({ conversationId }: { conversationId: string }) {
       onAskRefined={(question) => handleSend(question, [])}
       emptyState={
         <>
-          {temporary ? <TemporaryChatIntro /> : <ChatGreeting seed={conversationId} />}
+          {temporary ? <TemporaryChatIntro /> : <NewChatModes mode={mode} onPick={setMode} />}
           <ModeDisclosure mode={mode} />
         </>
       }
       emptyStateAvatar={
-        <AvatarPanel
+        // The mobile design's new chat has no companion above the modes;
+        // the temporary chat keeps it.
+        !temporary ? undefined : <AvatarPanel
           state={avatarState}
           gesture={avatarGesture}
           expression={avatarExpression}

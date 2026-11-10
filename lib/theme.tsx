@@ -52,6 +52,8 @@ export type Colors = {
   ink: string;
   inkSecondary: string;
   inkMuted: string;
+  /** The mobile design's tertiary text: placeholders, section labels. */
+  inkTertiary: string;
   inkInverse: string;
   nav: string;
   navStrong: string;
@@ -87,7 +89,7 @@ export type Colors = {
 /* Burgundy. --text-muted uses the phone value (globals.css:468-478), since
    this app is only ever the phone layout. */
 const BURGUNDY_LIGHT: Colors = {
-  canvas: "#f5f3f4",
+  canvas: "#faf9f8",
   surface: "#ffffff",
   surfaceMuted: "#faf8f9",
   surfaceHover: "rgba(77,67,57,0.05)",
@@ -99,6 +101,7 @@ const BURGUNDY_LIGHT: Colors = {
   ink: "#3d2a2f",
   inkSecondary: "#6b5c60",
   inkMuted: "#776b6f",
+  inkTertiary: "#9e8e93",
   inkInverse: "#ffffff",
   nav: "#5f5551",
   navStrong: "#4d4339",
@@ -144,6 +147,7 @@ const BURGUNDY_DARK: Colors = {
   ink: "#f5f0f2",
   inkSecondary: "#b6a5aa",
   inkMuted: "#928488",
+  inkTertiary: "#7d7074",
   inkInverse: "#ffffff",
   nav: "#beafb3",
   navStrong: "#ded3d6",
