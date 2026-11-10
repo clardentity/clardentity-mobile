@@ -14,6 +14,7 @@ on the web can be found and repeated here by path.
 | `app/error.tsx`, `app/global-error.tsx` | `ErrorBoundary` export in `app/_layout.tsx` | |
 | `app/(legal)/legal.tsx` | `components/legal/legal.tsx` | every file under `app/` is a route in Expo Router |
 | `app/manifest.ts`, `public/sw.js` | `app.json` | no service worker in a native app |
+| `app/launch/page.tsx` (`clardentity-mvp-mobile` only) | `app/launch/index.tsx` | signed in: a new chat; signed out: the home screen |
 | `components/**` | `components/**` | same file names, same exported names and props |
 | `lib/**` | `lib/**` | same modules; browser APIs swapped (below) |
 | `public/ui/*.svg`, `public/landing/*.svg` | `assets/ui`, `assets/landing`, `components/ui/icons.ts` | `MaskIcon src="/ui/..."` works unchanged |

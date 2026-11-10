@@ -144,6 +144,15 @@ export function DecisionReview({ review }: { review: DecisionReviewData }) {
         // decision question is decisions, and there is nothing to cite.
         <View style={hasOptions ? s.suggestionsDivided : undefined}>
           <Heading>One decision that&apos;s correct, and the ones that aren&apos;t</Heading>
+          {/* What the crossed-out lines are, said before anyone has to work
+              it out: a tester was confused by the struck-through answers
+              until realising they were the choices not to make. */}
+          {review.suggestions.some((sg) => !sg.sound) && (
+            <Text style={[s.headingNote, { marginTop: space(1) }]}>
+              The crossed-out ones are choices people often reach for here. Each is shown with the
+              reasoning trap behind it, so you can see why not to.
+            </Text>
+          )}
           {/* Not numbered. A numbered list of decisions reads as a ranking,
               and three of these are things not to do - the reader has to be
               able to tell which is which at a glance, before reading a word

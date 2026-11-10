@@ -295,6 +295,11 @@ export function ChatView({ conversationId }: { conversationId: string }) {
    * tablet layout never folds. */
   const [composerFocused, setComposerFocused] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
+  // The chip opened but no mode picked: a touch anywhere outside the rail
+  // (the chat box included) is a "never mind", and folds it back. The rail
+  // marks its own touches as they start; the screen's root reads the mark
+  // as each touch ends.
+  const touchInRail = useRef(false);
   const [keyboardShown, setKeyboardShown] = useState(false);
   // A phone held sideways (under 500pt tall) folds the rail all the time: the
   // rail and the box otherwise left the thread about two lines of the screen.
@@ -1183,6 +1188,10 @@ export function ChatView({ conversationId }: { conversationId: string }) {
       ref={frameRef}
       style={{ flex: 1, minHeight: 0 }}
       onLayout={() => frameRef.current?.measureInWindow((_x, y) => setKeyboardOffset(y))}
+      onTouchEnd={() => {
+        if (railOpen && !touchInRail.current) setRailOpen(false);
+        touchInRail.current = false;
+      }}
     >
       {/* Lives here rather than in the composer: a finished call has to be
           written into this conversation, and the composer doesn't know which
@@ -1503,7 +1512,7 @@ export function ChatView({ conversationId }: { conversationId: string }) {
           <View style={{ flexDirection: "row", alignItems: "center" }}>
             {/* flex 1 so the unselected state - which renders all the modes
                 as cards - gets the full row. */}
-            <View style={{ flex: 1, minWidth: 0 }}>
+            <View style={{ flex: 1, minWidth: 0 }} onTouchStart={() => (touchInRail.current = true)}>
               <ModeSelector
                 value={mode}
                 folded={(composerFocused || shortScreen) && !railOpen}
@@ -1597,7 +1606,12 @@ export function ChatView({ conversationId }: { conversationId: string }) {
                     : undefined
             }
             value={draft}
-            onChange={setDraft}
+            onChange={(next) => {
+              setDraft(next);
+              // The chip kept the keyboard up, so going on typing is the
+              // other way of leaving the rail without picking.
+              setRailOpen(false);
+            }}
             onSend={handleSend}
             onTypingChange={setIsTyping}
             textareaRef={composerRef}

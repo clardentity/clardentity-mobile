@@ -1,13 +1,13 @@
 import * as AppleAuthentication from "expo-apple-authentication";
 import Constants, { ExecutionEnvironment } from "expo-constants";
 import * as Crypto from "expo-crypto";
-import { router } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { Link, router } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform, View } from "react-native";
 import { API_BASE_URL, serverDetail } from "@/lib/apiClient";
 import { setTokens, useAuth } from "@/lib/auth";
 import { AppText, Button } from "@/components/ui/primitives";
-import { space, useColors, useTheme } from "@/lib/theme";
+import { fonts, space, useColors, useTheme } from "@/lib/theme";
 
 /* Google sign-in, and Sign in with Apple beside it on iOS.
  *
@@ -85,8 +85,31 @@ async function exchange(path: string, body: Record<string, unknown>) {
   return (await res.json()) as { access_token: string; refresh_token: string };
 }
 
-export function GoogleSignInButton({ label }: { label: "signin_with" | "signup_with" }) {
+/** `acceptedTerms` is sent with the token: a Google or Apple sign-in can
+ *  create the account, and the server records the agreement only when told.
+ *  While `disabledHint` is set the buttons aren't drawn and the hint stands
+ *  in their place, as on the web (where Google's button is an iframe that
+ *  can't be disabled). */
+export function GoogleSignInButton({
+  label,
+  acceptedTerms = false,
+  disabledHint,
+  termsNotice = false,
+}: {
+  label: "signin_with" | "signup_with";
+  acceptedTerms?: boolean;
+  disabledHint?: string;
+  /** For a screen with no terms box (log in): says under the button that a
+   *  new account made through it agrees to the terms. */
+  termsNotice?: boolean;
+}) {
   const { refresh } = useAuth();
+  // Read at the moment the credential arrives.
+  const acceptedRef = useRef(acceptedTerms);
+  useEffect(() => {
+    acceptedRef.current = acceptedTerms;
+  }, [acceptedTerms]);
+  const disabled = Boolean(disabledHint);
   const c = useColors();
   const { theme } = useTheme();
   const [error, setError] = useState<string | null>(null);
@@ -130,7 +153,12 @@ export function GoogleSignInButton({ label }: { label: "signin_with" | "signup_w
         if (!isSuccessResponse(result)) return; // cancelled
         const idToken = result.data.idToken;
         if (!idToken) throw new Error("Google didn't return a sign-in token.");
-        await finish(await exchange("/auth/oauth/google", { id_token: idToken }));
+        await finish(
+          await exchange("/auth/oauth/google", {
+            id_token: idToken,
+            accepted_terms: acceptedRef.current,
+          }),
+        );
       } catch (err) {
         if (isErrorWithCode(err) && err.code === statusCodes.SIGN_IN_CANCELLED) return;
         throw err;
@@ -164,6 +192,7 @@ export function GoogleSignInButton({ label }: { label: "signin_with" | "signup_w
             identity_token: credential.identityToken,
             nonce,
             full_name: name || undefined,
+            accepted_terms: acceptedRef.current,
           }),
         );
       } catch (err) {
@@ -186,7 +215,13 @@ export function GoogleSignInButton({ label }: { label: "signin_with" | "signup_w
         <View style={{ height: 1, flex: 1, backgroundColor: c.hairline }} />
       </View>
 
-      {showApple && (
+      {disabled && (
+        <AppText tone="muted" style={{ textAlign: "center" }}>
+          {disabledHint}
+        </AppText>
+      )}
+
+      {showApple && !disabled && (
         // Apple's own button: App Review expects its HIG look, not ours.
         <AppleAuthentication.AppleAuthenticationButton
           buttonType={
@@ -207,10 +242,24 @@ export function GoogleSignInButton({ label }: { label: "signin_with" | "signup_w
         />
       )}
 
-      {showGoogle && (
+      {showGoogle && !disabled && (
         <Button onPress={() => void signInWithGoogle()} disabled={busy} style={{ borderRadius: 9999 }}>
           {`${verb} with Google`}
         </Button>
+      )}
+
+      {termsNotice && !disabled && (
+        <AppText size="xs" tone="muted" style={{ textAlign: "center" }}>
+          New to Clardentity? Continuing creates an account, and means you agree to the{" "}
+          <Link href="/terms" style={{ fontFamily: fonts.medium, color: c.brand }}>
+            Terms of Service
+          </Link>{" "}
+          and the{" "}
+          <Link href="/privacy" style={{ fontFamily: fonts.medium, color: c.brand }}>
+            Privacy Policy
+          </Link>
+          .
+        </AppText>
       )}
 
       {error && (

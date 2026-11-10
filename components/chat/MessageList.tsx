@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Alert,
   FlatList,
@@ -48,7 +48,7 @@ import { SafetyCard } from "@/components/chat/SafetyCard";
 import { FeedbackWidget } from "@/components/chat/FeedbackWidget";
 import { ExportFileMenu } from "@/components/chat/ExportFileMenu";
 import { cleanMessageText } from "@/lib/text";
-import { renderInline, splitBlocks } from "@/lib/markdown";
+import { renderInline, spaceLabels, splitBlocks } from "@/lib/markdown";
 import { Spinner } from "@/components/ui/primitives";
 import { sessionStorage } from "@/lib/storage";
 import { fonts, fontSize, messageButton, px, radius, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
@@ -266,12 +266,21 @@ export function MessageList({
 
   /* What a streaming answer opens with, and so when its bubble may appear.
    *
-   * The gist, normally. Thought coach leads with its box instead, so the box
-   * alone is enough to open the bubble there. Decision-making's box sits
-   * *under* the gist (gist, then the decisions, then the journey), so a box
-   * that lands first - it often does, a few seconds ahead - waits for the
-   * gist rather than appearing and then being pushed down by it. */
-  const streamingLead = Boolean(streaming?.crux || streaming?.thinkingReview);
+   * The gist, in every mode. Decision-making's and Thought coach's boxes sit
+   * *under* it (gist, then the box, then the journey), so a box that lands
+   * first - it often does, a few seconds ahead - waits for the gist rather
+   * than appearing and then being pushed down by it. */
+  const streamingLead = Boolean(streaming?.crux);
+
+  /* Opening an answer's fold is reading that answer, not following the
+   * conversation: stop carrying the view to the bottom. The answer grows by
+   * its whole journey when the fold opens, and the follow (the content-size
+   * handler below) took the reader straight past it to the last source
+   * link. With the follow released the list keeps its offset, so the
+   * journey opens right under the line just tapped. */
+  const releaseFollow = useCallback(() => {
+    stickToBottom.current = false;
+  }, []);
 
   // A new message - yours or its answer - is the moment you want to be at the
   // bottom, so this one is smooth and deliberate.
@@ -394,7 +403,7 @@ export function MessageList({
             makingImage={st.makingImage ?? false}
             thinkingReview={st.thinkingReview ?? null}
             isStreaming
-            openFully={st.safety?.level === "crisis"}
+            openFully={opensFully(st.mode_used, st.safety?.level)}
           />
         </ErrorBoundary>
       );
@@ -447,7 +456,8 @@ export function MessageList({
             onUseMode={onUseMode}
             onAskRefined={onAskRefined}
             onSubmitEdit={onSubmitEdit}
-            openFully={m.safety?.level === "crisis"}
+            openFully={opensFully(m.mode_used, m.safety?.level)}
+            onDetailOpening={releaseFollow}
           />
         </View>
       </ErrorBoundary>
@@ -646,9 +656,20 @@ function renderTextWithCitations(text: string, claims: Claim[]): ReactNode[] {
  * scroller, since a phone is rarely wide enough for one - markers inside
  * the cells included. Every run of text is selectable, so a passage can be
  * copied out of an answer the way it could on the web. */
+/* Which answers show in full rather than folded under their gist.
+ *
+ * A reply to someone who may be in danger asks whether they are safe below
+ * its first line, and that must not wait behind a "Show full answer" they
+ * may never press. And Co-Creative's answer is the thing that was asked
+ * for - the slides, the story, the post - with a line on top saying what it
+ * is; folding it away made the reader open it every time. */
+function opensFully(mode: string | null | undefined, safetyLevel: string | null | undefined): boolean {
+  return safetyLevel === "crisis" || mode === "creative";
+}
+
 function AnswerBody({ text, claims }: { text: string; claims: Claim[] }) {
   const s = useThemedStyles(bodyStyles);
-  const clean = cleanMessageText(text);
+  const clean = spaceLabels(cleanMessageText(text));
   const blocks = splitBlocks(clean);
   if (blocks.length === 1 && blocks[0].kind === "text") {
     return (
@@ -870,6 +891,7 @@ function MessageBubble({
   onAskRefined,
   onSubmitEdit,
   openFully = false,
+  onDetailOpening,
 }: {
   id: string;
   role: string;
@@ -912,10 +934,11 @@ function MessageBubble({
   onUseMode?: (mode: string) => void;
   onAskRefined?: (question: string) => void;
   onSubmitEdit?: (messageId: string, content: string) => void;
-  /** Show the whole answer, not just the gist: a reply to someone who may
-   *  be in danger asks whether they are safe below its first line, and that
-   *  must not wait behind a "Show full answer" they may never press. */
+  /** Show the whole answer, not just the gist (see opensFully). */
   openFully?: boolean;
+  /** Called as the fold is about to open, so the list stops following the
+   *  bottom before the answer grows by its whole journey. */
+  onDetailOpening?: () => void;
 }) {
   const s = useThemedStyles(bubbleStyles);
   const colors = useColors();
@@ -1084,28 +1107,22 @@ function MessageBubble({
           me a logo", not an illustration of a paragraph. */}
       {!isUser && generatedImage && <GeneratedImageCard image={generatedImage} />}
       {!isUser && !generatedImage && makingImage && <GeneratedImagePlaceholder />}
-      {/* Thought coach's box is the analysis itself and leads, above the
-          gist: the reasoning contrast, then the one-line answer, then the
-          journey folded beneath. */}
-      {!isUser && panel === "thinking" && thinkingReview && <ThinkingReview review={thinkingReview} />}
-      {/* Its slot, held while it is still being written, so that order is
-          visible from the first frame rather than the box dropping in
-          above things already read. */}
-      {!isUser && isStreaming && panel === "thinking" && !thinkingReview && (
-        <View style={s.slot}>
-          <ThinkingIndicator compact label="Working out how to think about this" />
-        </View>
-      )}
       {hasCrux && <CruxCard text={crux as string} />}
-      {/* Decision-making reads gist, then "One decision that's correct,
-          and the ones that aren't", then the journey (2026-10-12; it used
-          to lead with the box, as Thought coach still does). The box's
-          slot is held under the gist while it is being written, for the
-          same reason as above. */}
+      {/* Decision-making and Thought coach both read gist, then their box,
+          then the journey folded beneath. Each box's slot is held under the
+          gist while it is still being written, so the order is visible from
+          the first frame rather than the box dropping in between things
+          already read. */}
       {!isUser && panel === "decision" && decisionReview && <DecisionReview review={decisionReview} />}
       {!isUser && isStreaming && panel === "decision" && !decisionReview && (
         <View style={s.slot}>
           <ThinkingIndicator compact label="Weighing the decisions" />
+        </View>
+      )}
+      {!isUser && panel === "thinking" && thinkingReview && <ThinkingReview review={thinkingReview} />}
+      {!isUser && isStreaming && panel === "thinking" && !thinkingReview && (
+        <View style={s.slot}>
+          <ThinkingIndicator compact label="Working out how to think about this" />
         </View>
       )}
       {isStreaming && (hasCrux || decisionReview || thinkingReview) && (
@@ -1116,7 +1133,10 @@ function MessageBubble({
       )}
       {hasCrux && !isStreaming && (
         <Pressable
-          onPress={() => setDetailOpen((v) => !v)}
+          onPress={() => {
+            if (!detailOpen) onDetailOpening?.();
+            setDetailOpen((v) => !v);
+          }}
           accessibilityRole="button"
           accessibilityState={{ expanded: detailOpen }}
           style={({ pressed }) => [s.fold, pressed && s.pressed]}
