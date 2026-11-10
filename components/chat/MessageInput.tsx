@@ -15,6 +15,7 @@ import { usePhoneLayout } from "@/lib/usePhoneLayout";
 import { track } from "@/lib/analytics";
 import { fonts, fontSize, px, radius, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
 import { tourRef } from "@/components/tour/TourOverlay";
+import { modeLabel } from "@/lib/modes";
 
 /** Tallest the composer's text box grows before it scrolls - about five
  *  lines on a phone, about eight at the desktop's larger type. Past that it
@@ -38,7 +39,7 @@ export type PendingAttachment = {
 };
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
+export const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
 /** How many files one message can carry. */
 const MAX_ATTACHMENTS = 10;
 /** Mirrors SUPPORTED_TYPES / LEGACY_TYPES in the backend's document_ingestion. */
@@ -326,6 +327,9 @@ export function MessageInput({
             value={value}
             onChangeText={handleChange}
             multiline
+            // react-native-web draws a multiline box two rows tall by default;
+            // a phone sizes it to its text, one row when empty, as the web does.
+            {...(Platform.OS === "web" ? ({ rows: 1 } as object) : null)}
             // Return is the new-line key, as on the web's touch layout: there
             // is no Shift to hold, and sending on Return meant half-written
             // questions went out. The arrow is the only way to send.
@@ -343,13 +347,15 @@ export function MessageInput({
               // reasons this box gets disabled and actively wrong about the
               // others - a caller that disabled it mid-answer got an
               // instruction the user had already followed.
-              disabled ? disabledReason ?? "One moment…" : "Ask a question…"
+              disabled ? disabledReason ?? "One moment…" : "Ask Clardentity anything..."
             }
-            placeholderTextColor={colors.inkMuted}
+            placeholderTextColor={colors.inkTertiary}
             accessibilityHint={touchKeyboard ? "Return starts a new line - tap the arrow to send" : undefined}
             style={[
               s.input,
               { maxHeight: phoneLayout ? COMPOSER_MAX_HEIGHT_PHONE : COMPOSER_MAX_HEIGHT_DESKTOP },
+              // focus:outline-none, as on the web: the card is the frame.
+              Platform.OS === "web" && { outlineWidth: 0 },
               disabled && { opacity: 0.7 },
             ]}
           />
@@ -371,9 +377,15 @@ export function MessageInput({
             style={({ pressed }) => [s.iconButton, { marginLeft: -space(1.5) }, pressed && s.pressed, disabled && s.off]}
           >
             {({ pressed }) => (
-              <MaskIcon src="/ui/composer-paperclip.svg" size={px(20)} color={pressed ? colors.brand : colors.inkMuted} />
+              <MaskIcon src="/ui/m-paperclip.svg" size={20} color={pressed ? colors.brand : colors.inkSecondary} />
             )}
           </Pressable>
+          {/* The mobile design names the companion beside the paperclip. */}
+          {mode ? (
+            <Text numberOfLines={1} style={s.modeName}>
+              {modeLabel(mode)}
+            </Text>
+          ) : null}
 
           <View style={[s.controls, { gap: phoneLayout ? space(4) : space(1) }]}>
             {/* Every mode since 2026-10-16. Where choosing is not part of
@@ -484,7 +496,7 @@ export function MessageInput({
               hitSlop={4}
               style={({ pressed }) => [
                 s.send,
-                { width: phoneLayout ? px(36) : px(32), height: phoneLayout ? px(36) : px(32) },
+                { width: 32, height: 32 },
                 isGenerating
                   ? { backgroundColor: pressed ? colors.surfaceHover : colors.surfaceSunken }
                   : // Grey while there is nothing to send. It was a full
@@ -499,18 +511,7 @@ export function MessageInput({
               ) : (
                 // One face: an arrow that greys out says "not yet" without
                 // the glyph changing under the reader's eye.
-                <Svg
-                  viewBox="0 0 20 20"
-                  width={px(20)}
-                  height={px(20)}
-                  fill="none"
-                  stroke={sendDisabled ? colors.inkMuted : "#ffffff"}
-                  strokeWidth={1.6}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <Path d="M10 16V4.5M4.6 9.9 10 4.5l5.4 5.4" />
-                </Svg>
+                <MaskIcon src="/ui/m-arrow-up.svg" size={20} color={sendDisabled ? colors.inkMuted : "#ffffff"} />
               )}
             </Pressable>
           </View>
@@ -619,34 +620,37 @@ const styles = (c: Colors) =>
     small: { fontFamily: fonts.regular, fontSize: fontSize.xs },
     // The web stacks five near-transparent black shadows; one soft one
     // stands in for them.
+    // The mobile design's composer: a borderless white card, 22 radius,
+    // 120 tall when empty.
     card: {
-      borderRadius: px(20),
-      borderWidth: 1,
-      borderColor: c.hairlineStrong,
+      minHeight: 120,
+      justifyContent: "space-between",
+      borderRadius: 22,
       backgroundColor: c.surfaceRaised,
-      shadowColor: "#000",
-      shadowOpacity: 0.05,
-      shadowRadius: 30,
-      shadowOffset: { width: 0, height: 14 },
-      elevation: 3,
+      shadowColor: "#3d2a2f",
+      shadowOpacity: 0.04,
+      shadowRadius: 16,
+      shadowOffset: { width: 0, height: 4 },
+      elevation: 1,
     },
-    textWrap: { paddingHorizontal: space(4), paddingTop: space(3.5) },
+    textWrap: { paddingHorizontal: 17, paddingTop: 17 },
     textWrapWide: { paddingHorizontal: px(27), paddingTop: px(26), minHeight: px(124) - px(47) },
     input: {
       padding: 0,
       fontFamily: fonts.regular,
-      fontSize: fontSize.lg,
+      fontSize: 16,
       color: c.ink,
       textAlignVertical: "top",
     },
     foot: {
       flexDirection: "row",
       alignItems: "center",
-      paddingLeft: space(3.5),
-      paddingRight: space(3),
-      paddingTop: space(2.5),
-      paddingBottom: space(2),
+      paddingLeft: 17,
+      paddingRight: 15,
+      paddingTop: 10,
+      paddingBottom: 11,
     },
+    modeName: { marginLeft: 6, flexShrink: 1, fontFamily: fonts.regular, fontSize: 16, color: c.inkSecondary },
     footWide: { paddingHorizontal: px(27), paddingBottom: px(15) },
     controls: { marginLeft: "auto", minWidth: 0, flexDirection: "row", alignItems: "center", flexShrink: 1 },
     iconButton: { width: px(32), height: px(32), flexShrink: 0, alignItems: "center", justifyContent: "center", borderRadius: radius.lg },

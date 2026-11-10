@@ -58,8 +58,8 @@ export function WorkspaceDetail({ workspaceId }: { workspaceId: string }) {
     let cancelled = false;
 
     Promise.all([
-      apiFetch<Workspace>(`/workspaces/${workspaceId}`),
-      apiFetch<Conversation[]>(`/chat/conversations?workspace_id=${workspaceId}`),
+      apiFetch<Workspace>(`/workspaces/${encodeURIComponent(workspaceId)}`),
+      apiFetch<Conversation[]>(`/chat/conversations?workspace_id=${encodeURIComponent(workspaceId)}`),
       apiFetch<Workspace[]>("/workspaces").catch(() => [] as Workspace[]),
     ])
       .then(([ws, convs, all]) => {
@@ -114,7 +114,7 @@ export function WorkspaceDetail({ workspaceId }: { workspaceId: string }) {
     setDeletingWorkspace(true);
     setError(null);
     try {
-      await apiFetch(`/workspaces/${workspaceId}`, { method: "DELETE" });
+      await apiFetch(`/workspaces/${encodeURIComponent(workspaceId)}`, { method: "DELETE" });
       // The list page re-provisions a workspace on sign-in if this was the
       // last one, so there is always somewhere to land.
       router.replace("/workspace");
@@ -148,7 +148,9 @@ export function WorkspaceDetail({ workspaceId }: { workspaceId: string }) {
   const header = (
     <View>
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "flex-start", justifyContent: "space-between", gap: space(4) }}>
-        <View style={{ flex: 1, minWidth: px(200) }}>
+        {/* Sized to its text, as on the web: the line under the title takes
+            the phone's whole width, so Create wraps to its own row. */}
+        <View style={{ maxWidth: "100%" }}>
           <Text numberOfLines={1} accessibilityRole="header" style={{ fontFamily: fonts.medium, fontSize: fontSize["4xl"], color: c.ink }}>
             {workspace.name}
           </Text>

@@ -6,7 +6,7 @@ import { apiFetch } from "@/lib/apiClient";
 import { authErrorMessage } from "@/lib/auth";
 import { Spinner } from "@/components/ui/primitives";
 import { cleanMessageText } from "@/lib/text";
-import { fonts, fontSize, px, radius, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
+import { fonts, fontSize, messageButton, px, radius, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
 import { usePrefersReducedMotion } from "@/lib/useReducedMotion";
 
 /* The Devil's Draft, as the back of the card.
@@ -83,7 +83,7 @@ export function useCounterfactual({
     setError(null);
     try {
       const res = await apiFetch<{ counterfactual_content: string }>(
-        `/chat/${conversationId}/messages/${messageId}/devils-advocate`,
+        `/chat/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/devils-advocate`,
         { method: "POST" },
       );
       setText(res.counterfactual_content);
@@ -208,7 +208,7 @@ export function FlipButton({
       accessibilityLabel={label}
       hitSlop={8}
       style={({ pressed }) => [
-        { borderRadius: radius.md, padding: space(1) },
+        { ...messageButton, borderRadius: radius.md, padding: space(1) },
         pressed && { backgroundColor: c.surfaceHover },
         style,
       ]}

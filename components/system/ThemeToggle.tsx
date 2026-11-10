@@ -18,11 +18,12 @@ export function ThemeToggle({ style, tourId }: { style?: StyleProp<ViewStyle>; t
         onPress={toggleTheme}
         accessibilityRole="button"
         accessibilityLabel="Toggle light and dark theme"
-        // 44pt tap area around a 28pt control - the web's .tap-target.
-        hitSlop={8}
+        // The web's .tap-target: a 44pt box on touch screens.
         style={({ pressed }) => ({
           alignItems: "center",
           justifyContent: "center",
+          minWidth: 44,
+          minHeight: 44,
           borderRadius: radius.md,
           padding: space(1.5),
           backgroundColor: pressed ? c.surfaceHover : "transparent",

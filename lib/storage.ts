@@ -42,6 +42,12 @@ class SyncStorage {
     this.emit(key);
   }
 
+  /** Everything except `keep` goes - signing out, where what is left on the
+   *  phone should be preferences, not the last person's data. */
+  clearExcept(keep: ReadonlySet<string> = new Set()): void {
+    for (const key of [...this.values.keys()]) if (!keep.has(key)) this.removeItem(key);
+  }
+
   /** Filled from disk at startup; not a write, so nothing is persisted. */
   seed(key: string, value: string) {
     this.values.set(key, value);
@@ -64,7 +70,13 @@ function secureKey(key: string): string {
 
 async function write(key: string, value: string) {
   try {
-    if (SECURE_KEYS.has(key)) await SecureStore.setItemAsync(secureKey(key), value);
+    // THIS_DEVICE_ONLY: a session token has no business in an iCloud or
+    // device-to-device backup. Reads take no options, so tokens written
+    // before this change still load.
+    if (SECURE_KEYS.has(key))
+      await SecureStore.setItemAsync(secureKey(key), value, {
+        keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+      });
     else await AsyncStorage.setItem(PREFIX + key, value);
   } catch {
     // A failed write costs the value on the next launch, nothing more.

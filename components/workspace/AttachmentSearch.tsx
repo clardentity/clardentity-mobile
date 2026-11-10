@@ -95,7 +95,6 @@ export function AttachmentSearch({
           variant="primary"
           onPress={() => void handleSearch()}
           disabled={searching || !query.trim()}
-          style={{ height: 44 }}
         >
           {searching ? <Spinner color="#ffffff" /> : "Search"}
         </Button>

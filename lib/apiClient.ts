@@ -14,11 +14,19 @@ export function clientTimezoneHeader(): Record<string, string> {
   }
 }
 
-export const BACKEND_ROOT_URL =
-  process.env.EXPO_PUBLIC_BACKEND_URL ?? "https://clardentity-backend.onrender.com";
+const DEFAULT_BACKEND_URL = "https://clardentity-backend.onrender.com";
 
-export const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_URL ?? `${BACKEND_ROOT_URL}/api/v1`;
+/** A release build only talks to the backend over TLS: a mistyped or
+ *  leftover http:// override would otherwise send every token in the clear.
+ *  Development keeps http, for a backend on the LAN. */
+function secureOr(url: string | undefined, fallback: string): string {
+  if (!url) return fallback;
+  return __DEV__ || url.startsWith("https://") ? url : fallback;
+}
+
+export const BACKEND_ROOT_URL = secureOr(process.env.EXPO_PUBLIC_BACKEND_URL, DEFAULT_BACKEND_URL);
+
+export const API_BASE_URL = secureOr(process.env.EXPO_PUBLIC_API_URL, `${BACKEND_ROOT_URL}/api/v1`);
 
 export class ApiError extends Error {
   status: number;
@@ -61,6 +69,22 @@ type RequestOptions = Omit<RequestInit, "body"> & {
  */
 const CACHE_MS = 3000;
 const inFlight = new Map<string, { at: number; promise: Promise<unknown> }>();
+
+/** Forget every cached answer - on sign-out, so the next account never
+ *  inherits the last one's reads. */
+export function clearApiCache(): void {
+  inFlight.clear();
+}
+
+/** The server's own message, when it wrote one for people. FastAPI's
+ *  validation errors are a list of objects, and a 500 is an unhandled
+ *  failure whose text is not meant for the screen; the deliberate ones (a
+ *  429 limit, a 503 "busy") are strings and pass. Anything else gets
+ *  `fallback`. */
+export function serverDetail(body: unknown, status: number, fallback: string): string {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  return status !== 500 && typeof detail === "string" && detail ? detail : fallback;
+}
 
 function cacheable(options: RequestOptions): boolean {
   const method = (options.method ?? "GET").toUpperCase();

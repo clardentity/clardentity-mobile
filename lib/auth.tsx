@@ -1,4 +1,5 @@
-import { localStorage } from "@/lib/storage";
+import { Image } from "expo-image";
+import { localStorage, sessionStorage } from "@/lib/storage";
 
 import {
   createContext,
@@ -9,7 +10,10 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { API_BASE_URL, ApiError, apiFetch } from "@/lib/apiClient";
+import { API_BASE_URL, ApiError, apiFetch, clearApiCache, serverDetail } from "@/lib/apiClient";
+import { clearExportFiles } from "@/lib/exportFiles";
+import { forgetChoices } from "@/lib/pickableModels";
+import { leaveTemporaryChatUnless } from "@/lib/temporaryChat";
 import { trackServerWait } from "@/lib/serverWait";
 
 const ACCESS_TOKEN_KEY = "clardentity_access_token";
@@ -33,6 +37,37 @@ export function clearTokens(): void {
   localStorage.removeItem(ACCESS_TOKEN_KEY);
   localStorage.removeItem(REFRESH_TOKEN_KEY);
   sessionListeners.forEach((fn) => fn());
+}
+
+/** Preferences about the phone rather than the person: these survive
+ *  signing out. Everything else stored on the device goes with the session. */
+const DEVICE_PREFERENCES = new Set([
+  "clardentity-theme",
+  "clardentity-accent",
+  "clardentity-consent",
+  "clardentity-mode-switching",
+  "clardentity-tour",
+]);
+
+/** What signing out (or deleting the account) leaves behind should be the
+ *  phone's settings, not the last person's data: the guest transcript, the
+ *  last workspace, model picks, drafts, cached reads, generated images and
+ *  exported files all go.
+ *
+ *  Local only: the server keeps the refresh token valid until it expires,
+ *  because there is no logout endpoint to revoke it yet (MA-012). */
+export function clearLocalUserData(): void {
+  // First, while the token is still there to authorise it: an open
+  // temporary chat is deleted now rather than left to the server's sweep.
+  leaveTemporaryChatUnless(null);
+  clearTokens();
+  localStorage.clearExcept(DEVICE_PREFERENCES);
+  sessionStorage.clearExcept();
+  clearApiCache();
+  forgetChoices();
+  clearExportFiles();
+  void Image.clearDiskCache().catch(() => {});
+  void Image.clearMemoryCache().catch(() => {});
 }
 
 const sessionListeners = new Set<() => void>();
@@ -155,6 +190,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // A refresh the server rejected clears the tokens from outside React (see
+  // refreshAccessToken); the user has to go with them, or the screen keeps
+  // showing an account that no longer has a session.
+  useEffect(
+    () =>
+      subscribeStoredSession(() => {
+        if (getRefreshToken() === null) setUser(null);
+      }),
+    [],
+  );
+
   useEffect(() => {
     let cancelled = false;
 
@@ -232,7 +278,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(() => {
-    clearTokens();
+    clearLocalUserData();
     setUser(null);
   }, []);
 
@@ -290,8 +336,7 @@ export function networkErrorMessage(err: unknown): string | null {
 
 export function authErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
-    const detail = (err.body as { detail?: string } | null)?.detail;
-    return detail ?? err.message;
+    return serverDetail(err.body, err.status, "Something went wrong. Try again in a moment.");
   }
   return networkErrorMessage(err) ?? (err instanceof Error ? err.message : "Something went wrong");
 }

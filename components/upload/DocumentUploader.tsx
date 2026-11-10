@@ -4,11 +4,12 @@ import Svg, { Path } from "react-native-svg";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import * as DocumentPicker from "expo-document-picker";
 import { File as FsFile } from "expo-file-system";
-import { API_BASE_URL, apiFetch } from "@/lib/apiClient";
-import { authErrorMessage, getAccessToken } from "@/lib/auth";
+import { API_BASE_URL, apiFetch, serverDetail } from "@/lib/apiClient";
+import { authErrorMessage, getAccessToken, refreshAccessToken } from "@/lib/auth";
 import { Badge, Spinner } from "@/components/ui/primitives";
-import { DOCUMENT_EXTENSIONS, fileExtension } from "@/components/chat/MessageInput";
+import { DOCUMENT_EXTENSIONS, MAX_DOCUMENT_BYTES, fileExtension } from "@/components/chat/MessageInput";
 import { track } from "@/lib/analytics";
+import { deleteQuietly } from "@/lib/exportFiles";
 import { fonts, fontSize, px, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
 
 type DocumentItem = {
@@ -42,7 +43,7 @@ export function DocumentUploader({
 
   const fetchDocuments = useCallback((): Promise<DocumentItem[]> => {
     // Polled while anything is still processing, so never from the cache.
-    return apiFetch<DocumentItem[]>(`/documents?workspace_id=${workspaceId}`, { fresh: true });
+    return apiFetch<DocumentItem[]>(`/documents?workspace_id=${encodeURIComponent(workspaceId)}`, { fresh: true });
   }, [workspaceId]);
 
   useEffect(() => {
@@ -80,38 +81,60 @@ export function DocumentUploader({
     const picked = await DocumentPicker.getDocumentAsync({ type: "*/*", copyToCacheDirectory: true });
     if (picked.canceled || !picked.assets[0]) return;
     const file = picked.assets[0];
+    // The picker's copy in the cache is ours to remove once it has been
+    // sent (or turned away): it is someone's document, and the cache only
+    // clears when the OS decides to.
+    const cached = new FsFile(file.uri);
     const ext = fileExtension(file.name);
     if (!DOCUMENT_EXTENSIONS.includes(ext)) {
       setError("That file type isn't supported. Use PDF, Word, Excel, PowerPoint, or a text file");
+      deleteQuietly(cached);
+      return;
+    }
+    const size = file.size ?? cached.size ?? 0;
+    // The server's limit (MAX_UPLOAD_SIZE_MB), checked here so a phone
+    // doesn't spend a minute uploading something that will be refused.
+    if (size > MAX_DOCUMENT_BYTES) {
+      setError("That file is over 25MB. Try a smaller one");
+      deleteQuietly(cached);
       return;
     }
     setError(null);
     setUploading(true);
 
     try {
-      const form = new FormData();
-      form.append("workspace_id", workspaceId);
-      // React Native's FormData takes a file as { uri, name, type }.
-      form.append("file", {
-        uri: file.uri,
-        name: file.name,
-        type: file.mimeType ?? "application/octet-stream",
-      } as unknown as Blob);
+      // A FormData body is consumed by the request, so a retry builds its own.
+      const post = (accessToken: string | null) => {
+        const form = new FormData();
+        form.append("workspace_id", workspaceId);
+        // React Native's FormData takes a file as { uri, name, type }.
+        form.append("file", {
+          uri: file.uri,
+          name: file.name,
+          type: file.mimeType ?? "application/octet-stream",
+        } as unknown as Blob);
+        return fetch(`${API_BASE_URL}/documents/upload`, {
+          method: "POST",
+          headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+          body: form,
+        });
+      };
 
-      const accessToken = getAccessToken();
       track("document_uploaded", {
         extension: ext || undefined,
-        size_kb: Math.round((file.size ?? new FsFile(file.uri).size) / 1024),
+        size_kb: Math.round(size / 1024),
       });
-      const res = await fetch(`${API_BASE_URL}/documents/upload`, {
-        method: "POST",
-        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
-        body: form,
-      });
+      let res = await post(getAccessToken());
+      // An expired access token is not a failed upload - refresh it once and
+      // send again, as apiFetch does for JSON calls.
+      if (res.status === 401) {
+        const fresh = await refreshAccessToken();
+        if (fresh) res = await post(fresh);
+      }
 
       if (!res.ok) {
         const body = await res.json().catch(() => null);
-        throw new Error(body?.detail ?? `Upload failed with status ${res.status}`);
+        throw new Error(serverDetail(body, res.status, `Upload failed with status ${res.status}`));
       }
 
       const data = await fetchDocuments();
@@ -119,13 +142,14 @@ export function DocumentUploader({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
+      deleteQuietly(cached);
       setUploading(false);
     }
   }
 
   async function handleDelete(documentId: string) {
     try {
-      await apiFetch(`/documents/${documentId}`, { method: "DELETE" });
+      await apiFetch(`/documents/${encodeURIComponent(documentId)}`, { method: "DELETE" });
       const data = await fetchDocuments();
       setDocuments(data);
     } catch (err) {

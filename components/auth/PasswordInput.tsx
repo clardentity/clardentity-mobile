@@ -43,8 +43,9 @@ export function PasswordInput({
           position: "absolute",
           right: 0,
           top: 0,
-          height: px(44),
-          width: px(44),
+          // h-9 w-9: the field's own height, so the eye sits on its centre line.
+          height: px(36),
+          width: px(36),
           alignItems: "center",
           justifyContent: "center",
           borderTopRightRadius: radius.lg,

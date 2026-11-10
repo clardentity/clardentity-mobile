@@ -16,7 +16,7 @@ export function Wordmark({ style }: { style?: StyleProp<ViewStyle> }) {
       <Pressable onPress={() => router.push("/")}
         accessibilityRole="link"
         accessibilityLabel="Clardentity"
-        style={[{ flexDirection: "row", alignItems: "center", gap: px(3.7), alignSelf: "flex-start" }, style]}
+        style={[{ flexDirection: "row", alignItems: "center", gap: px(3.7) }, style]}
       >
         <MaskIcon src="/ui/logo-dots.svg" width={px(23.029)} height={px(22.275)} color={c.brand} />
         <Text style={{ fontFamily: fonts.regular, fontSize: px(18.563), color: c.ink }}>Clardentity</Text>

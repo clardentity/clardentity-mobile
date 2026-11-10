@@ -88,6 +88,14 @@ export function setChoice(mode: string, id: string | null) {
   emit();
 }
 
+/** Drop the remembered picks from memory - on sign-out, after storage has
+ *  been cleared, so the next account starts on Auto. */
+export function forgetChoices() {
+  choices = {};
+  loadedChoices = false;
+  emit();
+}
+
 /** Fetch the list once. Safe to call on every mount. */
 export function loadModels(mode: string): Promise<void> {
   if (models !== null) return Promise.resolve();

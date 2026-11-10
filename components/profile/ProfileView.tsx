@@ -96,7 +96,7 @@ export function ProfileView() {
   async function handleRemoveAspect(id: string) {
     setError(null);
     try {
-      setProfile(await apiFetch<Profile>(`/profile/aspects/${id}`, { method: "DELETE" }));
+      setProfile(await apiFetch<Profile>(`/profile/aspects/${encodeURIComponent(id)}`, { method: "DELETE" }));
     } catch (err) {
       setError(authErrorMessage(err));
     }

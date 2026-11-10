@@ -134,7 +134,9 @@ export function WorkspaceList() {
   const header = (
     <View>
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "flex-start", justifyContent: "space-between", gap: space(4) }}>
-        <View style={{ flex: 1, minWidth: px(200) }}>
+        {/* Sized to its text, as on the web: the line under the title takes
+            the phone's whole width, so Create wraps to its own row. */}
+        <View style={{ maxWidth: "100%" }}>
           <Text accessibilityRole="header" style={{ fontFamily: fonts.medium, fontSize: fontSize["4xl"], color: c.ink }}>
             Workspaces
           </Text>

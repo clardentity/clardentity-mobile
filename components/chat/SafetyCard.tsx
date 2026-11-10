@@ -1,8 +1,8 @@
 import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import Animated, { FadeIn } from "react-native-reanimated";
-import * as WebBrowser from "expo-web-browser";
 import type { SafetyCardData, SafetyResource } from "@/lib/sse";
 import { fonts, fontSize, radius, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
+import { safeOpenUrl } from "@/lib/links";
 
 /* The support card, above an answer the safety screen flagged (backend
  * services/safety). The numbers come from the server's verified table for
@@ -85,7 +85,7 @@ export function SafetyCard({ card }: { card: SafetyCardData }) {
         {!hasCrisisLine && (
           <>
             <Text
-              onPress={() => void WebBrowser.openBrowserAsync(card.fallback_url)}
+              onPress={() => safeOpenUrl(card.fallback_url)}
               accessibilityRole="link"
               style={{ fontFamily: fonts.medium, color: c.brand, textDecorationLine: "underline" }}
             >

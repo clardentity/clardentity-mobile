@@ -57,5 +57,5 @@ export function leaveTemporaryChatUnless(current: string | null): void {
   write(null);
   // Nothing to say if it fails: the chat is in no list either way, and the
   // server sweeps what is left.
-  apiFetch(`/chat/conversations/${open}`, { method: "DELETE" }).catch(() => {});
+  apiFetch(`/chat/conversations/${encodeURIComponent(open)}`, { method: "DELETE" }).catch(() => {});
 }

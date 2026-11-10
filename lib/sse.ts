@@ -1,5 +1,5 @@
 import { fetch } from "expo/fetch";
-import { API_BASE_URL, clientTimezoneHeader } from "@/lib/apiClient";
+import { API_BASE_URL, clientTimezoneHeader, serverDetail } from "@/lib/apiClient";
 import { getAccessToken, networkErrorMessage, getRefreshToken, refreshAccessToken } from "@/lib/auth";
 
 export type Evidence = {
@@ -351,7 +351,7 @@ async function openStream(
   signal?: AbortSignal,
 ): Promise<Awaited<ReturnType<typeof fetch>>> {
   const accessToken = getAccessToken();
-  return fetch(`${API_BASE_URL}/chat/${conversationId}/messages`, {
+  return fetch(`${API_BASE_URL}/chat/${encodeURIComponent(conversationId)}/messages`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -402,7 +402,7 @@ export async function streamChatMessage(
     let detail = `Request failed with status ${res.status}`;
     try {
       const errBody = await res.json();
-      detail = errBody.detail ?? detail;
+      detail = serverDetail(errBody, res.status, detail);
     } catch {
       // no JSON body
     }
@@ -547,7 +547,8 @@ function handleRawEvent(raw: string, handlers: ChatStreamHandlers) {
     else if (eventType === "budget") handlers.onBudget?.(parsed);
     else if (eventType === "safety") handlers.onSafety?.(parsed);
     else if (eventType === "health_consent") handlers.onHealthConsent?.(parsed);
-    else if (eventType === "error") handlers.onError(parsed.detail);
+    else if (eventType === "error")
+      handlers.onError(typeof parsed.detail === "string" ? parsed.detail : "Something went wrong with this answer.");
   } catch {
     // ignore malformed frame
   }

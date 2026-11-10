@@ -48,7 +48,7 @@ export function OfflineNotice() {
             elevation: 1,
           }}
         >
-          You're offline. Nothing new will be saved until you reconnect.
+          You&apos;re offline. Nothing new will be saved until you reconnect.
         </Text>
       )}
     </View>

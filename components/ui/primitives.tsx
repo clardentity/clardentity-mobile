@@ -1,6 +1,7 @@
-import type { ReactNode, Ref } from "react";
+import { useState, type ReactNode, type Ref } from "react";
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -213,37 +214,64 @@ function useFieldStyle(): TextStyle {
     borderColor: c.hairlineStrong,
     backgroundColor: c.surface,
     paddingHorizontal: space(3),
-    fontSize: fontSize.sm,
+    // 16 on the glass, not text-sm zoomed: the web's phone layout holds
+    // fields there so iOS never zooms the page into one (globals.css).
+    fontSize: 16,
     fontFamily: fonts.regular,
     color: c.ink,
   };
 }
 
-export function Input({ style, editable, ref, ...rest }: TextInputProps & { ref?: Ref<TextInputInstance> }) {
+/** The web's `focus:border-brand`: the field's border turns the accent while
+ *  it has the caret. On web builds the browser's own focus outline is turned
+ *  off, as the web app's fields do, so only that border shows. */
+function useFocusBorder({ onFocus, onBlur }: Pick<TextInputProps, "onFocus" | "onBlur">) {
+  const c = useColors();
+  const [focused, setFocused] = useState(false);
+  return {
+    focusStyle: [focused && { borderColor: c.brand }, Platform.OS === "web" && { outlineWidth: 0 }],
+    focusProps: {
+      onFocus: (e: Parameters<NonNullable<TextInputProps["onFocus"]>>[0]) => {
+        setFocused(true);
+        onFocus?.(e);
+      },
+      onBlur: (e: Parameters<NonNullable<TextInputProps["onBlur"]>>[0]) => {
+        setFocused(false);
+        onBlur?.(e);
+      },
+    },
+  };
+}
+
+export function Input({ style, editable, ref, onFocus, onBlur, ...rest }: TextInputProps & { ref?: Ref<TextInputInstance> }) {
   const base = useFieldStyle();
   const c = useColors();
+  const { focusStyle, focusProps } = useFocusBorder({ onFocus, onBlur });
   return (
     <TextInput
       ref={ref}
       placeholderTextColor={c.inkMuted}
       editable={editable}
-      style={[base, { height: px(44) }, editable === false && { backgroundColor: c.surfaceMuted, color: c.inkMuted }, style]}
+      style={[base, { height: px(36) }, ...focusStyle, editable === false && { backgroundColor: c.surfaceMuted, color: c.inkMuted }, style]}
       {...rest}
+      {...focusProps}
     />
   );
 }
 
-export function Textarea({ style, ref, ...rest }: TextInputProps & { ref?: Ref<TextInputInstance> }) {
+export function Textarea({ style, ref, onFocus, onBlur, ...rest }: TextInputProps & { ref?: Ref<TextInputInstance> }) {
   const base = useFieldStyle();
   const c = useColors();
+  const { focusStyle, focusProps } = useFocusBorder({ onFocus, onBlur });
   return (
     <TextInput
       ref={ref}
       multiline
       textAlignVertical="top"
       placeholderTextColor={c.inkMuted}
-      style={[base, { paddingVertical: space(2), minHeight: px(88) }, style]}
+      style={[base, { paddingVertical: space(2), minHeight: px(88) }, ...focusStyle, style]}
       {...rest}
+      {...focusProps}
     />
   );
 }

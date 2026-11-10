@@ -51,7 +51,7 @@ import { cleanMessageText } from "@/lib/text";
 import { renderInline, splitBlocks } from "@/lib/markdown";
 import { Spinner } from "@/components/ui/primitives";
 import { sessionStorage } from "@/lib/storage";
-import { fonts, fontSize, px, radius, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
+import { fonts, fontSize, messageButton, px, radius, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
 import { track } from "@/lib/analytics";
 
 export type StreamingMessage = {
@@ -1313,7 +1313,7 @@ const bubbleStyles = (c: Colors) =>
       color: c.inkMuted,
     },
     headerActions: { flexDirection: "row", alignItems: "center", gap: space(1.5) },
-    iconButton: { borderRadius: radius.md, padding: space(1) },
+    iconButton: { ...messageButton, borderRadius: radius.md, padding: space(1) },
     pressed: { backgroundColor: c.surfaceHover },
     slot: {
       marginBottom: space(3),
@@ -1540,10 +1540,10 @@ function ActionButton({
 const actionStyles = (c: Colors) =>
   StyleSheet.create({
     fork: { marginTop: space(1.5), flexDirection: "row", alignItems: "center", gap: space(0.5) },
-    forkButton: { borderRadius: radius.md, padding: space(0.5) },
+    forkButton: { ...messageButton, borderRadius: radius.md, padding: space(0.5) },
     forkCount: { fontFamily: fonts.regular, fontSize: fontSize.xs, color: c.inkMuted, fontVariant: ["tabular-nums"] },
     actions: { marginTop: space(2), flexDirection: "row", alignItems: "center", gap: space(2) },
-    actionButton: { borderRadius: radius.md, padding: space(1) },
+    actionButton: { ...messageButton, borderRadius: radius.md, padding: space(1) },
     pressed: { backgroundColor: c.surfaceHover },
   });
 

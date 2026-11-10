@@ -19,7 +19,12 @@ export default function LoginPage() {
   const passwordRef = useRef<TextInputInstance | null>(null);
 
   async function handleSubmit() {
-    if (submitting || !email || !password) return;
+    if (submitting) return;
+    // The web leaves this to the browser's "Please fill out this field".
+    if (!email || !password) {
+      setError("Enter your email or username and your password.");
+      return;
+    }
     setError(null);
     setSubmitting(true);
     try {
@@ -82,7 +87,7 @@ export default function LoginPage() {
 
         {error && <ErrorNotice>{error}</ErrorNotice>}
 
-        <Button variant="primary" onPress={() => void handleSubmit()} disabled={submitting || !email || !password}>
+        <Button variant="primary" onPress={() => void handleSubmit()} disabled={submitting}>
           {submitting ? "Logging in…" : "Log in"}
         </Button>
 

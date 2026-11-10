@@ -1,5 +1,6 @@
+import Constants, { ExecutionEnvironment } from "expo-constants";
 import { getLocales } from "expo-localization";
-import { mediaDevices, MediaStream, RTCPeerConnection } from "react-native-webrtc";
+import type { MediaStream, RTCPeerConnection } from "react-native-webrtc";
 import { API_BASE_URL } from "@/lib/apiClient";
 import { getAccessToken, refreshAccessToken } from "@/lib/auth";
 
@@ -18,6 +19,22 @@ import { getAccessToken, refreshAccessToken } from "@/lib/auth";
  * getStats() instead of an FFT. That gives openness; width stays neutral.
  * WebRTC needs a development build (not Expo Go).
  */
+
+type WebRTC = typeof import("react-native-webrtc");
+
+/* Loaded on first call rather than imported: react-native-webrtc throws at
+ * import time when its native module is missing, which is the case in Expo
+ * Go. Importing it eagerly would crash the whole chat screen there; this way
+ * only the call says it is unavailable. */
+function loadWebRTC(): WebRTC | null {
+  if (Constants.executionEnvironment === ExecutionEnvironment.StoreClient) return null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require("react-native-webrtc") as WebRTC;
+  } catch {
+    return null;
+  }
+}
 
 const CALLS_URL = "https://api.openai.com/v1/realtime/calls";
 
@@ -54,9 +71,10 @@ function localeSignals(): { timezone: string | null; languages: string[] } {
 }
 
 async function mintClientSecret(): Promise<string> {
-  let token = getAccessToken();
+  let token = getAccessToken() ?? (await refreshAccessToken());
+  if (!token) throw new Error("Your session expired. Sign in again to start a call.");
   const signals = localeSignals();
-  const post = (bearer: string | null) =>
+  const post = (bearer: string) =>
     fetch(`${API_BASE_URL}/realtime/session`, {
       method: "POST",
       headers: {
@@ -102,6 +120,14 @@ export class LiveCall {
   constructor(private handlers: LiveCallHandlers) {}
 
   async start(): Promise<void> {
+    const webrtc = loadWebRTC();
+    if (!webrtc) {
+      this.handlers.onError("Live calls need the full Clardentity app. They don't run in Expo Go.");
+      this.handlers.onPhase("error");
+      return;
+    }
+    const { mediaDevices, RTCPeerConnection } = webrtc;
+
     this.handlers.onPhase("connecting");
 
     try {

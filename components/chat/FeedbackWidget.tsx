@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import { apiFetch } from "@/lib/apiClient";
 import { track } from "@/lib/analytics";
-import { fonts, fontSize, px, radius, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
+import { fonts, fontSize, messageButton, px, radius, space, useColors, useThemedStyles, type Colors } from "@/lib/theme";
 
 /* "Was this helpful?" - a thumb, or a thumb and a sentence, on one answer.
  *
@@ -41,7 +41,7 @@ export function FeedbackWidget({
   async function save(next: { rating: "up" | "down" | null; comment: string | null }) {
     setSaving(true);
     try {
-      await apiFetch(`/chat/${conversationId}/messages/${messageId}/feedback`, {
+      await apiFetch(`/chat/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/feedback`, {
         method: "PUT",
         body: next,
       });
@@ -191,7 +191,7 @@ const styles = (c: Colors) =>
     root: { marginTop: space(1.5), gap: space(1.5) },
     row: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: space(2) },
     muted: { fontSize: fontSize.xs, fontFamily: fonts.regular, color: c.inkMuted },
-    thumb: { borderRadius: radius.md, padding: space(1) },
+    thumb: { ...messageButton, borderRadius: radius.md, padding: space(1) },
     link: { borderRadius: radius.md, paddingHorizontal: space(1.5), paddingVertical: space(0.5) },
     linkText: {
       fontSize: fontSize.xs,

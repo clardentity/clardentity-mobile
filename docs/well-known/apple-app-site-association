@@ -1,0 +1,18 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["TEAMID.ai.clardentity.app"],
+        "components": [
+          { "/": "/reset-password", "comment": "Password reset email" },
+          { "/": "/start" },
+          { "/": "/chat/*" },
+          { "/": "/workspace/*" }
+        ]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": ["TEAMID.ai.clardentity.app"]
+  }
+}
