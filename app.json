@@ -107,7 +107,15 @@
       "expo-status-bar",
       "@config-plugins/react-native-webrtc",
       "expo-asset",
-      "expo-apple-authentication"
+      "expo-apple-authentication",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "extraProguardRules": "-keep class org.webrtc.** { *; }\n-dontwarn org.webrtc.**"
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": false
